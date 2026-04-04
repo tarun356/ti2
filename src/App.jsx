@@ -56,7 +56,7 @@ async function apiPost(action, payload = {}) {
   return res.json()
 }
 
-// ── Shared UI Styles ──────────────────────────────────────────────────────────
+// ── Shared UI styles ──────────────────────────────────────────────────────────
 const inpStyle = { width: '100%', fontSize: '14px', padding: '9px 11px', borderRadius: '8px', border: '0.5px solid var(--border)', boxSizing: 'border-box', background: 'var(--bg-primary)', color: 'var(--text-primary)', outline: 'none', fontFamily: 'inherit' }
 const btnPrimary = { padding: '9px 18px', borderRadius: '8px', border: 'none', background: AMB, color: 'white', cursor: 'pointer', fontSize: '14px', fontWeight: 500, fontFamily: 'inherit' }
 const btnSecondary = { padding: '8px 14px', borderRadius: '8px', border: '0.5px solid var(--border-med)', background: 'var(--bg-primary)', color: 'var(--text-primary)', cursor: 'pointer', fontSize: '13px', fontFamily: 'inherit' }
@@ -69,16 +69,13 @@ function Spinner() { return <div style={{ display: 'flex', alignItems: 'center',
 // ── Customer Form ─────────────────────────────────────────────────────────────
 function CustomerForm({ menu, onSubmit }) {
   const [form, setForm] = useState({ name: '', phone: '', address: '', slot: 'slot1', date: todayStr(), items: {}, notes: '' })
-  const [submitted, setSubmitted] = useState(false)
-  const [busy, setBusy] = useState(false)
-  const [errors, setErrors] = useState({})
-  const [locLoading, setLocLoading] = useState(false)
-  const [coords, setCoords] = useState(null)
+  const [submitted, setSubmitted] = useState(false); const [busy, setBusy] = useState(false); const [errors, setErrors] = useState({});
+  const [locLoading, setLocLoading] = useState(false); const [coords, setCoords] = useState(null)
 
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const clr = k => setErrors(e => ({ ...e, [k]: '' }))
 
-  // Load Private Cache (Browser only)
+  // LOAD PRIVATE CACHE: Automatically fills info for returning customers (Safe!)
   useEffect(() => {
     const saved = localStorage.getItem('tiffinbox_user')
     if (saved) {
@@ -100,7 +97,7 @@ function CustomerForm({ menu, onSubmit }) {
         upd('address', data.display_name || `${latitude}, ${longitude}`); clr('address')
       } catch { upd('address', `${latitude}, ${longitude}`) }
       setLocLoading(false)
-    }, () => { alert('Location access denied'); setLocLoading(false) }, { enableHighAccuracy: true })
+    }, () => { alert('Location denied'); setLocLoading(false) }, { enableHighAccuracy: true })
   }
 
   function updateQty(item, delta) {
@@ -111,29 +108,32 @@ function CustomerForm({ menu, onSubmit }) {
     }); clr('items')
   }
 
-  async function handleSubmit() {
+  function validate() {
     const e = {}
     if (!form.name.trim()) e.name = 'Name is required'
-    if (!/^[6-9]\d{9}$/.test(form.phone.trim())) e.phone = 'Valid 10-digit number required'
-    if (!form.address.trim()) e.address = 'Address is required'
+    if (!/^[6-9]\d{9}$/.test(form.phone.trim())) e.phone = 'Valid 10-digit mobile number required'
+    if (!form.address.trim()) e.address = 'Delivery address is required'
     if (!Object.keys(form.items).length) e.items = 'Please select at least one item'
-    if (Object.keys(e).length) { setErrors(e); return }
+    return e
+  }
 
+  async function handleSubmit() {
+    const e = validate(); if (Object.keys(e).length) { setErrors(e); return }
     setBusy(true)
     const finalNotes = coords ? `${form.notes}\n[GPS: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]` : form.notes
-    
-    // Save to Private Cache
-    localStorage.setItem('tiffinbox_user', JSON.stringify({ name: form.name, phone: form.phone, address: form.address }))
 
-    await onSubmit({ ...form, notes: finalNotes })
+    // SAVE PRIVATE CACHE: Remembers this customer ONLY on this phone
+    localStorage.setItem('tiffinbox_user', JSON.stringify({ name: form.name.trim(), phone: form.phone.trim(), address: form.address.trim() }))
+
+    await onSubmit({ ...form, name: form.name.trim(), phone: form.phone.trim(), address: form.address.trim(), notes: finalNotes })
     setSubmitted(true); setBusy(false)
   }
 
   if (submitted) return (
-    <div style={{ maxWidth: 480, margin: '5rem auto', padding: '0 1rem' }}>
-      <div style={{ background: 'var(--bg-primary)', border: '0.5px solid var(--border)', borderRadius: 16, padding: '2.5rem 2rem', textAlign: 'center' }}>
+    <div style={{ maxWidth: 480, margin: '5rem auto', padding: '0 1rem', textAlign: 'center' }}>
+      <div style={{ background: 'var(--bg-primary)', border: '0.5px solid var(--border)', borderRadius: 16, padding: '2.5rem 2rem' }}>
         <p style={{ fontWeight: 500, fontSize: '18px', margin: '0 0 8px' }}>Order placed!</p>
-        <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>We've received your order and will confirm it shortly.</p>
+        <p style={{ fontSize: '14px', color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>We'll confirm your delivery shortly.</p>
         <button onClick={() => setSubmitted(false)} style={btnSecondary}>Place another order</button>
       </div>
     </div>
@@ -141,17 +141,12 @@ function CustomerForm({ menu, onSubmit }) {
 
   return (
     <div style={{ maxWidth: 520, margin: '0 auto', padding: '1.5rem 1rem 4rem' }}>
-      <div style={{ marginBottom: '1.5rem' }}>
-        <h2 style={{ fontSize: '20px', fontWeight: 500, margin: '0 0 4px' }}>TiffinBox Jaipur</h2>
-        <p style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>Quality home-cooked meals delivered to your door.</p>
-      </div>
-
       <Sec title="Your details">
         <Fld label="Full name" error={errors.name}>
           <input style={inpStyle} placeholder="Your name" value={form.name} onChange={e => { upd('name', e.target.value); clr('name') }} />
         </Fld>
         <Fld label="Mobile number" error={errors.phone}>
-          <input style={inpStyle} placeholder="10-digit mobile number" value={form.phone} maxLength={10} onChange={e => { upd('phone', e.target.value.replace(/\D/g, '')); clr('phone') }} />
+          <input style={inpStyle} placeholder="10-digit mobile" value={form.phone} maxLength={10} onChange={e => { upd('phone', e.target.value.replace(/\D/g, '')); clr('phone') }} />
         </Fld>
         <Fld label="Delivery address" error={errors.address}>
           <div style={{ position: 'relative', marginBottom: 10 }}>
@@ -176,9 +171,7 @@ function CustomerForm({ menu, onSubmit }) {
             </button>
           ))}
         </div>
-        <Fld label="Delivery date">
-          <input style={inpStyle} type="date" value={form.date} min={todayStr()} onChange={e => upd('date', e.target.value)} />
-        </Fld>
+        <Fld label="Delivery date"><input style={inpStyle} type="date" value={form.date} min={todayStr()} onChange={e => upd('date', e.target.value)} /></Fld>
       </Sec>
 
       <Sec title="Menu items">
@@ -201,67 +194,139 @@ function CustomerForm({ menu, onSubmit }) {
       </Sec>
 
       <Sec title="Special instructions" optional>
-        <textarea style={{ ...inpStyle, resize: 'none' }} placeholder="Any special requests?" rows={2} value={form.notes} onChange={e => upd('notes', e.target.value)} />
+        <textarea style={{ ...inpStyle, resize: 'none' }} placeholder="Allergies, spice level..." rows={2} value={form.notes} onChange={e => upd('notes', e.target.value)} />
       </Sec>
 
-      <button onClick={handleSubmit} disabled={busy} style={{ ...btnPrimary, width: '100%', padding: '12px', fontSize: '15px' }}>
-        {busy ? 'Placing order...' : 'Place Order'}
-      </button>
+      <button onClick={handleSubmit} disabled={busy} style={{ ...btnPrimary, width: '100%', padding: '12px', fontSize: '15px' }}>{busy ? 'Placing order...' : 'Place Order'}</button>
     </div>
   )
 }
 
-// ── Admin View (Simplified for UI consistency) ────────────────────────────────
+// ── Admin View (FULL RESTORED) ────────────────────────────────────────────────
 function AdminView({ orders, menu, setOrders, setMenu, onLock }) {
-  const [tab, setTab] = useState('orders')
+  const [tab, setTab] = useState('orders'); const [filterDate, setFilterDate] = useState(todayStr()); 
+  const [filterSlot, setFilterSlot] = useState('all'); const [filterStatus, setFilterStatus] = useState('all');
+  const [search, setSearch] = useState(''); const [editOrder, setEditOrder] = useState(null);
+  const [selected, setSelected] = useState(new Set()); const [saving, setSaving] = useState(null)
+
+  const filtered = orders.filter(o => {
+    if (filterDate && o.date !== filterDate) return false
+    if (filterSlot !== 'all' && o.slot !== filterSlot) return false
+    if (filterStatus !== 'all' && o.status !== filterStatus) return false
+    if (search) {
+      const s = search.toLowerCase()
+      if (!o.name.toLowerCase().includes(s) && !o.phone.includes(s) && !o.address.toLowerCase().includes(s)) return false
+    }
+    return true
+  }).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+
+  async function updateStatus(id, status) {
+    setOrders(prev => prev.map(o => o.id === id ? { ...o, status } : o))
+    setSaving(id); try { await apiPost('updateField', { id, field: 'status', value: status }) } catch {} setSaving(null)
+  }
+
+  function exportExcel() {
+    const rows = filtered.map(o => ({ 'Date': o.date, 'Slot': SLOT_LABELS[o.slot], 'Name': o.name, 'Phone': `'${o.phone}`, 'Address': o.address, 'Items': Object.entries(o.items || {}).map(([k,v]) => `${k} x${v}`).join(', '), 'Status': STATUS[o.status]?.label || o.status }))
+    const ws = XLSX.utils.json_to_sheet(rows); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Orders'); XLSX.writeFile(wb, `tiffinbox-export.xlsx`)
+  }
+
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto', padding: '1.5rem 1rem' }}>
       <div style={{ display: 'flex', gap: 20, borderBottom: '1px solid var(--border)', marginBottom: 20 }}>
-        <button onClick={() => setTab('orders')} style={{ padding: '10px 0', border: 'none', borderBottom: tab === 'orders' ? `2px solid ${AMB}` : 'none', background: 'none', cursor: 'pointer', fontWeight: tab === 'orders' ? 500 : 400 }}>Orders ({orders.length})</button>
-        <button onClick={onLock} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>Lock Dashboard</button>
+        <button onClick={() => setTab('orders')} style={{ padding: '10px 0', border: 'none', borderBottom: tab === 'orders' ? `2px solid ${AMB}` : 'none', background: 'none', cursor: 'pointer', fontWeight: tab === 'orders' ? 500 : 400 }}>Orders</button>
+        <button onClick={() => setTab('settings')} style={{ padding: '10px 0', border: 'none', borderBottom: tab === 'settings' ? `2px solid ${AMB}` : 'none', background: 'none', cursor: 'pointer', fontWeight: tab === 'settings' ? 500 : 400 }}>Menu Settings</button>
+        <button onClick={onLock} style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)' }}>Lock</button>
       </div>
-      {tab === 'orders' ? <p>Check your Google Sheet for detailed order management.</p> : null}
+
+      {tab === 'orders' ? (
+        <>
+          <div style={{ display: 'flex', gap: 10, marginBottom: 20, flexWrap: 'wrap' }}>
+            <input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} style={{ ...inpStyle, width: 'auto' }} />
+            <input placeholder="Search..." value={search} onChange={e => setSearch(e.target.value)} style={{ ...inpStyle, width: 'auto' }} />
+            <button onClick={exportExcel} style={btnSecondary}>Export Excel</button>
+          </div>
+          <div style={{ background: 'white', borderRadius: 12, border: '1px solid var(--border)', overflow: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+              <thead><tr style={{ background: '#f9f9f9', borderBottom: '1px solid var(--border)' }}>
+                <th style={{ padding: 12, textAlign: 'left' }}>Date</th><th style={{ padding: 12, textAlign: 'left' }}>Customer</th><th style={{ padding: 12, textAlign: 'left' }}>Items</th><th style={{ padding: 12, textAlign: 'left' }}>Status</th>
+              </tr></thead>
+              <tbody>
+                {filtered.map(o => (
+                  <tr key={o.id} style={{ borderBottom: '1px solid var(--border)' }}>
+                    <td style={{ padding: 12 }}>{fmtDate(o.date)}</td>
+                    <td style={{ padding: 12 }}><b>{o.name}</b><br/>{o.phone}</td>
+                    <td style={{ padding: 12 }}>{Object.entries(o.items || {}).map(([i,q]) => <div key={i}>{i} x{q}</div>)}</td>
+                    <td style={{ padding: 12 }}>
+                      <select value={o.status} onChange={e => updateStatus(o.id, e.target.value)} style={{ padding: 4, borderRadius: 4 }}>
+                        {Object.entries(STATUS).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
+                      </select>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      ) : <SettingsTab menu={menu} setMenu={setMenu} />}
+    </div>
+  )
+}
+
+// ── Settings Tab (FULL RESTORED) ──────────────────────────────────────────────
+function SettingsTab({ menu, setMenu }) {
+  const [newItem, setNewItem] = useState(''); const [busy, setBusy] = useState(false)
+  async function addItem() { 
+    if (!newItem.trim()) return; const next = [...menu, newItem.trim()]; setMenu(next); setBusy(true)
+    try { await apiPost('updateMenu', { menu: next }) } catch {} setBusy(false); setNewItem('')
+  }
+  async function remove(item) {
+    const next = menu.filter(m => m !== item); setMenu(next); setBusy(true)
+    try { await apiPost('updateMenu', { menu: next }) } catch {} setBusy(false)
+  }
+  return (
+    <div style={{ maxWidth: 500, padding: 20, background: 'white', borderRadius: 12, border: '1px solid var(--border)' }}>
+      <p style={{ fontWeight: 600, marginBottom: 15 }}>Manage Menu</p>
+      {menu.map(m => <div key={m} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid #eee' }}>{m} <button onClick={() => remove(m)} style={{ color: 'red', border: 'none', background: 'none', cursor: 'pointer' }}>Delete</button></div>)}
+      <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
+        <input style={inpStyle} value={newItem} onChange={e => setNewItem(e.target.value)} placeholder="New dish name" />
+        <button onClick={addItem} disabled={busy} style={btnPrimary}>Add</button>
+      </div>
     </div>
   )
 }
 
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
-  const [view, setView] = useState('customer')
-  const [adminUnlocked, setAdminUnlocked] = useState(false)
-  const [orders, setOrders] = useState([])
-  const [menu, setMenu] = useState(DEFAULT_MENU)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
+  const [view, setView] = useState('customer'); const [adminUnlocked, setAdminUnlocked] = useState(false)
+  const [orders, setOrders] = useState([]); const [menu, setMenu] = useState(DEFAULT_MENU)
+  const [loading, setLoading] = useState(true); const [error, setError] = useState(null)
 
   useEffect(() => { loadData() }, [])
   async function loadData() {
     if (!SCRIPT_URL) { setLoading(false); return }
     try {
       const [o, m] = await Promise.all([apiGet({ action: 'getOrders' }), apiGet({ action: 'getMenu' })])
-      setOrders(Array.isArray(o) ? o : [])
-      setMenu(Array.isArray(m) && m.length ? m : DEFAULT_MENU)
-    } catch { setError('Connection failed. Check VITE_SCRIPT_URL.') }
+      setOrders(Array.isArray(o) ? o : []); setMenu(Array.isArray(m) && m.length ? m : DEFAULT_MENU)
+    } catch { setError('Connection failed') }
     setLoading(false)
   }
 
   async function handleNewOrder(order) {
     const newOrder = { ...order, id: genId(), createdAt: new Date().toISOString(), status: 'new' }
-    setOrders(prev => [...prev, newOrder])
-    await apiPost('submitOrder', { order: newOrder })
+    setOrders(prev => [...prev, newOrder]); await apiPost('submitOrder', { order: newOrder })
   }
 
   if (loading) return <Spinner />
   return (
     <div style={{ background: 'var(--bg-secondary)', minHeight: '100vh' }}>
       <header style={{ background: 'var(--bg-primary)', borderBottom: '0.5px solid var(--border)', padding: '12px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', position: 'sticky', top: 0, zIndex: 100 }}>
-        <span style={{ fontWeight: 600, color: AMB }}>TiffinBox</span>
+        <span style={{ fontWeight: 600, color: AMB }}>TiffinBox Jaipur</span>
         <div style={{ display: 'flex', gap: 5, background: 'var(--bg-secondary)', padding: 3, borderRadius: 8 }}>
           <button onClick={() => setView('customer')} style={{ padding: '4px 12px', border: 'none', borderRadius: 6, cursor: 'pointer', background: view === 'customer' ? 'white' : 'transparent', fontSize: '13px' }}>Order</button>
           <button onClick={() => setView('admin')} style={{ padding: '4px 12px', border: 'none', borderRadius: 6, cursor: 'pointer', background: view === 'admin' ? 'white' : 'transparent', fontSize: '13px' }}>Admin</button>
         </div>
       </header>
-      {view === 'customer' ? <CustomerForm menu={menu} onSubmit={handleNewOrder} /> : (adminUnlocked ? <AdminView orders={orders} menu={menu} setOrders={setOrders} onLock={() => setAdminUnlocked(false)} /> : <p style={{ textAlign: 'center', marginTop: 50 }}>Enter PIN to unlock admin view.</p>)}
+      {view === 'customer' ? <CustomerForm menu={menu} onSubmit={handleNewOrder} /> : (adminUnlocked ? <AdminView orders={orders} menu={menu} setOrders={setOrders} onLock={() => setAdminUnlocked(false)} /> : <PinGate onUnlock={() => setAdminUnlocked(true)} />)}
     </div>
   )
 }
