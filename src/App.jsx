@@ -215,47 +215,41 @@ function PinGate({ onUnlock }) {
 
 // ── Customer Form ─────────────────────────────────────────────────────────────
 function CustomerForm({ menu, onSubmit }) {
+  // Added [coords] state here so the app remembers the GPS data
   const [form, setForm] = useState({ name: '', phone: '', address: '', slot: 'slot1', date: todayStr(), items: {}, notes: '' })
   const [submitted, setSubmitted] = useState(false)
   const [busy, setBusy] = useState(false)
   const [errors, setErrors] = useState({})
   const [locLoading, setLocLoading] = useState(false)
+  const [coords, setCoords] = useState(null) // <-- FIXED: Added this state
 
   const upd = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const clr = k => setErrors(e => ({ ...e, [k]: '' }))
 
-  // 1. PRIVATE CACHE: This runs only on the user's browser
+  // PRIVATE CACHE: Loads only THIS browser's data
   useEffect(() => {
     const savedProfile = localStorage.getItem('tiffinbox_user');
     if (savedProfile) {
       try {
         const { name, phone, address } = JSON.parse(savedProfile);
-        setForm(f => ({ 
-          ...f, 
-          name: name || '', 
-          phone: phone || '', 
-          address: address || '' 
-        }));
-      } catch (e) {
-        console.error("Cache load failed", e);
-      }
+        setForm(f => ({ ...f, name: name || '', phone: phone || '', address: address || '' }));
+      } catch (e) { console.error("Cache load failed", e); }
     }
   }, []);
 
-  // 2. SIMPLE NAME CHANGE: No network calls, just local state
   function handleNameChange(val) {
     upd('name', val);
     clr('name');
   }
 
-  // GPS → reverse geocode (Nominatim, free)
   function handleDetectLocation() {
     if (!navigator.geolocation) { alert('Geolocation not supported'); return }
     setLocLoading(true)
     navigator.geolocation.getCurrentPosition(
       async ({ coords: { latitude, longitude } }) => {
+        setCoords({ lat: latitude, lng: longitude }); // <-- FIXED: Now saving the coordinates
         try {
-          const res  = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`)
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`)
           const data = await res.json()
           upd('address', data.display_name || `${latitude}, ${longitude}`)
           clr('address')
@@ -268,66 +262,43 @@ function CustomerForm({ menu, onSubmit }) {
 
   function updateQty(item, delta) {
     setForm(f => {
-      const items = { ...f.items }
-      const next  = Math.max(0, (items[item] || 0) + delta)
+      const items = { ...f.items }; const next = Math.max(0, (items[item] || 0) + delta)
       if (next === 0) delete items[item]; else items[item] = next
       return { ...f, items }
-    })
-    clr('items')
+    }); clr('items')
   }
 
   function validate() {
     const e = {}
-    if (!form.name.trim())                        e.name    = 'Name is required'
-    if (!/^[6-9]\d{9}$/.test(form.phone.trim())) e.phone   = 'Enter a valid 10-digit mobile number'
-    if (!form.address.trim())                     e.address = 'Delivery address is required'
-    if (!Object.keys(form.items).length)          e.items   = 'Please select at least one item'
+    if (!form.name.trim()) e.name = 'Name is required'
+    if (!/^[6-9]\d{9}$/.test(form.phone.trim())) e.phone = 'Valid 10-digit mobile number required'
+    if (!form.address.trim()) e.address = 'Delivery address is required'
+    if (!Object.keys(form.items).length) e.items = 'Please select at least one item'
     return e
   }
 
   async function handleSubmit() {
-    const e = validate();
-    if (Object.keys(e).length) { setErrors(e); return }
+    const e = validate(); if (Object.keys(e).length) { setErrors(e); return }
     setBusy(true);
 
     const finalName = form.name.trim();
     const finalPhone = form.phone.trim();
     const finalAddress = form.address.trim();
 
-    // SAVE TO PRIVATE CACHE: This keeps the data only on the user's device
-    localStorage.setItem('tiffinbox_user', JSON.stringify({
-      name: finalName,
-      phone: finalPhone,
-      address: finalAddress
-    }));
+    localStorage.setItem('tiffinbox_user', JSON.stringify({ name: finalName, phone: finalPhone, address: finalAddress }));
 
-    // Attach GPS if coords are present
-    const finalNotes = (typeof coords !== 'undefined' && coords) 
+    // FIXED: Correctly attaching the GPS coordinates to the notes
+    const finalNotes = coords 
       ? `${form.notes.trim()} [GPS: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]` 
       : form.notes.trim();
 
-    await onSubmit({ 
-      ...form, 
-      name: finalName, 
-      phone: finalPhone, 
-      address: finalAddress, 
-      notes: finalNotes 
-    });
-
-    setSubmitted(true);
-    setBusy(false);
+    await onSubmit({ ...form, name: finalName, phone: finalPhone, address: finalAddress, notes: finalNotes });
+    setSubmitted(true); setBusy(false);
   }
 
- function reset() {
-    // Keep 'f' (the current form state) but overwrite items and notes
-    setForm(f => ({ 
-      ...f, 
-      items: {}, 
-      notes: '', 
-      date: todayStr() 
-    }));
-    setErrors({});
-    setSubmitted(false);
+  function reset() {
+    setForm(f => ({ ...f, items: {}, notes: '', date: todayStr() }));
+    setCoords(null); setErrors({}); setSubmitted(false);
   }
 
   if (submitted) return (
