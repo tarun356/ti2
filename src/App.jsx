@@ -54,12 +54,22 @@ const CSS = `
 function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,6) }
 function todayStr() { return new Date().toISOString().split('T')[0] }
 function fmtDate(d) {
-  try { return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) }
-  catch { return d }
-}
-function fmtTime(iso) {
-  try { return new Date(iso).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) }
-  catch { return '' }
+  if (!d) return '';
+  try {
+    // Check if it's already a string like "2026-04-05"
+    const datePart = d.includes('T') ? d.split('T')[0] : d;
+    const parsedDate = new Date(datePart);
+    
+    if (isNaN(parsedDate.getTime())) return d; // Return original if parsing fails
+
+    return parsedDate.toLocaleDateString('en-IN', {
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric'
+    });
+  } catch {
+    return d; // Fallback to raw data if everything fails
+  }
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
