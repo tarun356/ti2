@@ -31,12 +31,11 @@ function doGet(e) {
   try {
     const p = e.parameter
     switch (p.action) {
-      case 'getOrders':   return json(getOrders())
-      case 'getMenu':     return json(getMenu())
-      case 'searchNames': return json(searchNames(p.q || ''))
-      case 'getCustomer': return json(getCustomer(p.name || ''))
-      case 'checkPin':    return json(checkPin(p.pin || ''))
-      default:            return json({ error: 'Unknown GET action: ' + p.action })
+      case 'getOrders':      return json(getOrders())
+      case 'getOrderStatus': return json(getOrderStatus(p.id || ''))
+      case 'getMenu':        return json(getMenu())
+      case 'checkPin':       return json(checkPin(p.pin || ''))
+      default:               return json({ error: 'Unknown GET action: ' + p.action })
     }
   } catch (err) {
     return json({ error: err.toString() })
@@ -98,6 +97,19 @@ function getOrders() {
   const vals  = sheet.getDataRange().getValues()
   if (vals.length <= 1) return []
   return vals.slice(1).map(rowToOrder).filter(o => o.id)
+}
+
+// Lightweight status check — called by the customer's order tracker every 15s
+function getOrderStatus(id) {
+  if (!id) return { error: 'No id provided' }
+  const sheet = getSheet('Orders', ORDER_COLS)
+  const vals  = sheet.getDataRange().getValues()
+  for (let i = 1; i < vals.length; i++) {
+    if (vals[i][0].toString() === id.toString()) {
+      return { status: vals[i][8] ? vals[i][8].toString() : 'new' }
+    }
+  }
+  return { error: 'Order not found' }
 }
 
 function submitOrder(order) {
