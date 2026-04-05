@@ -165,15 +165,13 @@ function CustomerForm({menu,onSubmit}) {
   const [submitted,setSubmitted]=useState(false)
   const [busy,setBusy]=useState(false)
   const [errors,setErrors]=useState({})
-  const [suggestions,setSuggestions]=useState([])
-  const [showSuggestions,setShowSuggestions]=useState(false)
   const [locLoading,setLocLoading]=useState(false)
   const [coords,setCoords]=useState(null)
 
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}))
   const clr=k=>setErrors(e=>({...e,[k]:''}))
 
-  // Pre-fill from localStorage on same device
+  // Pre-fill from this browser only — no server call is ever made for customer data
   useEffect(()=>{
     try {
       const saved=localStorage.getItem('tiffinbox_user')
@@ -183,28 +181,6 @@ function CustomerForm({menu,onSubmit}) {
       }
     } catch {}
   },[])
-
-  async function handleNameChange(val) {
-    upd('name',val); clr('name')
-    if(val.trim().length>=3) {
-      try {
-        const data=await apiGet({action:'searchNames',q:val.trim()})
-        setSuggestions(Array.isArray(data)?data:[])
-        setShowSuggestions(true)
-      } catch { setShowSuggestions(false) }
-    } else {
-      setSuggestions([]); setShowSuggestions(false)
-    }
-  }
-
-  async function selectCustomer(name) {
-    upd('name',name); setSuggestions([]); setShowSuggestions(false)
-    try {
-      const details=await apiGet({action:'getCustomer',name})
-      if(details.phone)   upd('phone',  details.phone.toString().replace(/'/g,''))
-      if(details.address) upd('address',details.address)
-    } catch {}
-  }
 
   function handleDetectLocation() {
     if(!navigator.geolocation){alert('Geolocation not supported');return}
@@ -283,21 +259,8 @@ function CustomerForm({menu,onSubmit}) {
 
       <Sec title="Your details">
         <Fld label="Full name" error={errors.name}>
-          <div style={{position:'relative'}}>
-            <input style={inp} placeholder="e.g. Priya Sharma" value={form.name} autoComplete="off"
-              onChange={e=>handleNameChange(e.target.value)}
-              onBlur={()=>setTimeout(()=>setShowSuggestions(false),180)}/>
-            {showSuggestions&&suggestions.length>0&&(
-              <div style={{position:'absolute',top:'100%',left:0,right:0,zIndex:200,background:'var(--bg-primary)',border:'0.5px solid var(--border-med)',borderRadius:8,marginTop:4,boxShadow:'0 4px 16px rgba(0,0,0,0.12)',maxHeight:200,overflow:'auto'}}>
-                {suggestions.map(s=>(
-                  <div key={s} onMouseDown={()=>selectCustomer(s)}
-                    style={{padding:'11px 12px',cursor:'pointer',fontSize:'14px',borderBottom:'0.5px solid var(--border)',color:'var(--text-primary)'}}>
-                    {s}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <input style={inp} placeholder="e.g. Priya Sharma" value={form.name}
+            onChange={e=>{upd('name',e.target.value);clr('name')}}/>
         </Fld>
         <Fld label="Mobile number" error={errors.phone}>
           <input style={inp} placeholder="10-digit number" value={form.phone} maxLength={10}
