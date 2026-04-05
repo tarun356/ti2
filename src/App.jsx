@@ -1,7 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import * as XLSX from 'xlsx'
 
+// ── Config ────────────────────────────────────────────────────────────────────
 const SCRIPT_URL = import.meta.env.VITE_SCRIPT_URL
+const POLL_INTERVAL = 30_000 // admin refreshes every 30s
+const ORDER_POLL_INTERVAL = 15_000 // customer order tracker polls every 15s
+
 const SLOT_LABELS = { slot1: 'Slot 1 — Morning', slot2: 'Slot 2 — Afternoon' }
 const STATUS = {
   new:        { label: 'New',              text: '#3B6D11', bg: '#EAF3DE' },
@@ -10,12 +14,42 @@ const STATUS = {
   delivered:  { label: 'Delivered',        text: '#0F6E56', bg: '#E1F5EE' },
   cancelled:  { label: 'Cancelled',        text: '#A32D2D', bg: '#FCEBEB' },
 }
+const STATUS_STEPS = ['new','confirmed','dispatched','delivered']
+const STATUS_ICONS = {
+  new:        '🕐',
+  confirmed:  '✅',
+  dispatched: '🛵',
+  delivered:  '🎉',
+  cancelled:  '❌',
+}
+
 const DEFAULT_MENU = [
   'Dal Tadka + Rice','Rajma Chawal','Chole + Puri',
   'Paneer Butter Masala + Roti','Mix Veg + Chapati',
   'Special Thali','Biryani (Veg)','Aloo Gobhi + Roti',
 ]
-const AMB='#BA7517', AMB_BG='#FAEEDA', AMB_DARK='#633806'
+
+// All accent colors as CSS custom properties so dark mode works properly
+const CSS = `
+  :root {
+    --amb: #BA7517;
+    --amb-bg: rgba(186,117,23,0.12);
+    --amb-dark: #7a4a0a;
+    --amb-text: #854d0e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --amb: #e09a2b;
+      --amb-bg: rgba(186,117,23,0.18);
+      --amb-dark: #f5c87a;
+      --amb-text: #f5c87a;
+    }
+  }
+  @keyframes spin { to { transform: rotate(360deg) } }
+  @keyframes tbox-shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
+  @keyframes tbox-pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+  @keyframes tbox-slide-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+`
 
 function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,6) }
 function todayStr() { return new Date().toISOString().split('T')[0] }
@@ -28,6 +62,7 @@ function fmtTime(iso) {
   catch { return '' }
 }
 
+// ── API ───────────────────────────────────────────────────────────────────────
 async function apiGet(params) {
   const res = await fetch(`${SCRIPT_URL}?${new URLSearchParams(params)}`,{redirect:'follow'})
   return res.json()
@@ -40,13 +75,14 @@ async function apiPost(action, payload={}) {
   return res.json()
 }
 
+// ── Shared UI ─────────────────────────────────────────────────────────────────
 const inp = {
   width:'100%',fontSize:'14px',padding:'9px 11px',borderRadius:'8px',
   border:'0.5px solid var(--border)',boxSizing:'border-box',
   background:'var(--bg-primary)',color:'var(--text-primary)',
   outline:'none',fontFamily:'inherit',
 }
-const btnP = {padding:'9px 18px',borderRadius:'8px',border:'none',background:AMB,color:'white',cursor:'pointer',fontSize:'14px',fontWeight:500,fontFamily:'inherit'}
+const btnP = {padding:'9px 18px',borderRadius:'8px',border:'none',background:'var(--amb)',color:'white',cursor:'pointer',fontSize:'14px',fontWeight:500,fontFamily:'inherit'}
 const btnS = {padding:'8px 14px',borderRadius:'8px',border:'0.5px solid var(--border-med)',background:'var(--bg-primary)',color:'var(--text-primary)',cursor:'pointer',fontSize:'13px',fontFamily:'inherit'}
 
 function Badge({status}) {
@@ -69,15 +105,14 @@ function Fld({label,children,error}) {
     <div style={{marginBottom:10}}>
       <label style={{display:'block',fontSize:'13px',color:'var(--text-secondary)',marginBottom:5}}>{label}</label>
       {children}
-      {error&&<p style={{color:'#A32D2D',fontSize:'12px',margin:'4px 0 0'}}>{error}</p>}
+      {error&&<p style={{color:'#e05555',fontSize:'12px',margin:'4px 0 0'}}>{error}</p>}
     </div>
   )
 }
 function Spinner() {
   return (
     <div style={{display:'flex',alignItems:'center',justifyContent:'center',height:'60vh'}}>
-      <div style={{width:28,height:28,border:`3px solid ${AMB_BG}`,borderTopColor:AMB,borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/>
-      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{width:28,height:28,border:'3px solid var(--amb-bg)',borderTopColor:'var(--amb)',borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/>
     </div>
   )
 }
@@ -85,7 +120,7 @@ function ErrorBanner({message,onRetry}) {
   return (
     <div style={{maxWidth:480,margin:'4rem auto',padding:'0 1rem',textAlign:'center'}}>
       <div style={{background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:16,padding:'2rem'}}>
-        <p style={{fontWeight:500,marginBottom:8}}>Could not connect</p>
+        <p style={{fontWeight:500,marginBottom:8,color:'var(--text-primary)'}}>Could not connect</p>
         <p style={{fontSize:'13px',color:'var(--text-secondary)',marginBottom:'1.25rem',lineHeight:1.6}}>{message}</p>
         <button onClick={onRetry} style={btnP}>Try again</button>
       </div>
@@ -96,16 +131,15 @@ function SetupScreen() {
   return (
     <div style={{maxWidth:560,margin:'4rem auto',padding:'0 1.5rem'}}>
       <div style={{background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:16,padding:'2rem'}}>
-        <div style={{width:48,height:48,borderRadius:10,background:AMB,display:'flex',alignItems:'center',justifyContent:'center',marginBottom:'1.25rem'}}>
+        <div style={{width:48,height:48,borderRadius:10,background:'var(--amb)',display:'flex',alignItems:'center',justifyContent:'center',marginBottom:'1.25rem'}}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
         </div>
-        <h2 style={{fontSize:'18px',fontWeight:500,marginBottom:8}}>One more step</h2>
+        <h2 style={{fontSize:'18px',fontWeight:500,marginBottom:8,color:'var(--text-primary)'}}>One more step</h2>
         <p style={{fontSize:'14px',color:'var(--text-secondary)',marginBottom:'1.5rem',lineHeight:1.7}}>Add your Google Apps Script URL to connect the app to your Google Sheet database.</p>
         <div style={{background:'var(--bg-secondary)',borderRadius:10,padding:'1rem 1.25rem',marginBottom:'1.5rem'}}>
-          <p style={{fontSize:'12px',fontWeight:500,marginBottom:10,color:'var(--text-secondary)',textTransform:'uppercase',letterSpacing:'0.05em'}}>Steps</p>
           {['Deploy apps-script/Code.gs to your Google Sheet (see README)','Copy the deployment URL from Apps Script','In Vercel → Settings → Environment Variables, add VITE_SCRIPT_URL = your URL','Redeploy the project'].map((step,i)=>(
             <div key={i} style={{display:'flex',gap:10,marginBottom:8,fontSize:'13px'}}>
-              <span style={{width:20,height:20,borderRadius:'50%',background:AMB_BG,color:AMB_DARK,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:500,flexShrink:0}}>{i+1}</span>
+              <span style={{width:20,height:20,borderRadius:'50%',background:'var(--amb-bg)',color:'var(--amb-text)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:500,flexShrink:0}}>{i+1}</span>
               <span style={{color:'var(--text-primary)',lineHeight:1.5}}>{step}</span>
             </div>
           ))}
@@ -116,6 +150,125 @@ function SetupScreen() {
   )
 }
 
+// ── Order Tracker (customer-side, Swiggy-style) ───────────────────────────────
+function OrderTracker({orderId, initialStatus, slot, date, onNewOrder}) {
+  const [status, setStatus]   = useState(initialStatus || 'new')
+  const [lastPoll, setLastPoll] = useState(null)
+  const cancelled = status === 'cancelled'
+  const delivered = status === 'delivered'
+  const done      = cancelled || delivered
+
+  // Poll the sheet every 15s until delivered or cancelled
+  useEffect(()=>{
+    if(done) return
+    async function poll() {
+      try {
+        const res = await apiGet({action:'getOrderStatus', id: orderId})
+        if(res.status) setStatus(res.status)
+        setLastPoll(new Date())
+      } catch {}
+    }
+    poll()
+    const t = setInterval(poll, ORDER_POLL_INTERVAL)
+    return ()=>clearInterval(t)
+  },[orderId, done])
+
+  // Persist latest known status to localStorage
+  useEffect(()=>{
+    try {
+      const saved = JSON.parse(localStorage.getItem('tiffinbox_active_order')||'{}')
+      if(saved.id===orderId) {
+        localStorage.setItem('tiffinbox_active_order', JSON.stringify({...saved, status}))
+      }
+    } catch {}
+  },[orderId, status])
+
+  const steps = STATUS_STEPS
+  const currentIdx = steps.indexOf(status)
+
+  return (
+    <div style={{maxWidth:480,margin:'3rem auto',padding:'0 1rem',animation:'tbox-slide-in 0.3s ease'}}>
+      {/* Header card */}
+      <div style={{background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:16,padding:'1.75rem 1.5rem',marginBottom:12}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'1.5rem'}}>
+          <div>
+            <p style={{fontWeight:500,fontSize:'18px',margin:'0 0 4px',color:'var(--text-primary)'}}>
+              {cancelled ? 'Order cancelled' : delivered ? 'Delivered!' : 'Order placed!'}
+            </p>
+            <p style={{fontSize:'13px',color:'var(--text-secondary)',margin:0}}>
+              {SLOT_LABELS[slot]} · {fmtDate(date)}
+            </p>
+          </div>
+          <span style={{fontSize:'28px'}}>{STATUS_ICONS[status]}</span>
+        </div>
+
+        {/* Progress steps */}
+        {!cancelled && (
+          <div style={{position:'relative'}}>
+            {/* Connecting line */}
+            <div style={{position:'absolute',top:14,left:14,right:14,height:2,background:'var(--border)',borderRadius:2}}/>
+            <div style={{
+              position:'absolute',top:14,left:14,height:2,borderRadius:2,
+              background:'var(--amb)',
+              width: currentIdx<=0?0:`${(currentIdx/(steps.length-1))*100}%`,
+              transition:'width 0.6s ease',
+            }}/>
+            <div style={{display:'flex',justifyContent:'space-between',position:'relative'}}>
+              {steps.map((step,i)=>{
+                const done_step = i<=currentIdx
+                const active    = i===currentIdx
+                return (
+                  <div key={step} style={{display:'flex',flexDirection:'column',alignItems:'center',gap:6,flex:1}}>
+                    <div style={{
+                      width:28,height:28,borderRadius:'50%',display:'flex',alignItems:'center',justifyContent:'center',
+                      background: done_step?'var(--amb)':'var(--bg-secondary)',
+                      border: `2px solid ${done_step?'var(--amb)':'var(--border)'}`,
+                      transition:'all 0.4s ease',
+                      animation: active&&!delivered?'tbox-pulse 2s ease infinite':'none',
+                    }}>
+                      {done_step
+                        ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        : <div style={{width:8,height:8,borderRadius:'50%',background:'var(--border)'}}/>
+                      }
+                    </div>
+                    <span style={{fontSize:'10px',textAlign:'center',color:done_step?'var(--amb-text)':'var(--text-tertiary)',fontWeight:done_step?500:400,lineHeight:1.2}}>
+                      {STATUS[step].label}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {cancelled && (
+          <div style={{background:'#fcebeb',borderRadius:8,padding:'10px 14px'}}>
+            <p style={{fontSize:'13px',color:'#A32D2D',margin:0}}>Your order was cancelled. Please contact us if you have any questions.</p>
+          </div>
+        )}
+      </div>
+
+      {/* Status message */}
+      {!done && (
+        <div style={{background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:12,padding:'12px 16px',marginBottom:12,display:'flex',alignItems:'center',gap:10}}>
+          <div style={{width:8,height:8,borderRadius:'50%',background:'var(--amb)',flexShrink:0,animation:'tbox-pulse 2s ease infinite'}}/>
+          <p style={{fontSize:'13px',color:'var(--text-secondary)',margin:0}}>
+            {status==='new' && 'Waiting for confirmation…'}
+            {status==='confirmed' && 'Your order is confirmed and being prepared.'}
+            {status==='dispatched' && 'Your food is on its way!'}
+          </p>
+          {lastPoll && <span style={{fontSize:'11px',color:'var(--text-tertiary)',marginLeft:'auto',flexShrink:0}}>Updated {fmtTime(lastPoll.toISOString())}</span>}
+        </div>
+      )}
+
+      <button onClick={onNewOrder} style={{...btnS,width:'100%',textAlign:'center'}}>
+        {done?'Place another order':'Place a new order'}
+      </button>
+    </div>
+  )
+}
+
+// ── PIN Gate ──────────────────────────────────────────────────────────────────
 function PinGate({onUnlock}) {
   const [digits,setDigits]=useState(['','','',''])
   const [shake,setShake]=useState(false)
@@ -139,30 +292,34 @@ function PinGate({onUnlock}) {
 
   return (
     <div style={{display:'flex',alignItems:'center',justifyContent:'center',minHeight:'72vh'}}>
-      <style>{`@keyframes tbox-shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-8px)}40%,80%{transform:translateX(8px)}}`}</style>
       <div style={{textAlign:'center',maxWidth:300,padding:'0 1rem'}}>
-        <div style={{width:56,height:56,borderRadius:'50%',background:AMB_BG,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 1.25rem'}}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={AMB} strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
+        <div style={{width:56,height:56,borderRadius:'50%',background:'var(--amb-bg)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 1.25rem'}}>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--amb)" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>
         </div>
-        <p style={{fontWeight:500,fontSize:'17px',margin:'0 0 6px'}}>Admin access</p>
+        <p style={{fontWeight:500,fontSize:'17px',margin:'0 0 6px',color:'var(--text-primary)'}}>Admin access</p>
         <p style={{fontSize:'13px',color:'var(--text-secondary)',margin:'0 0 1.75rem'}}>Enter your 4-digit PIN to continue</p>
         <div style={{display:'flex',gap:12,justifyContent:'center',marginBottom:'1rem',animation:shake?'tbox-shake 0.5s ease':'none',opacity:busy?0.6:1}}>
           {digits.map((d,i)=>(
             <input key={i} ref={refs[i]} type="password" inputMode="numeric" maxLength={1} value={d} disabled={busy}
               onChange={e=>onDigit(i,e.target.value)} onKeyDown={e=>onKey(i,e)}
-              style={{width:54,height:58,textAlign:'center',fontSize:'24px',borderRadius:10,border:`1.5px solid ${d?AMB:'var(--border)'}`,background:d?AMB_BG:'var(--bg-primary)',color:AMB_DARK,outline:'none',fontFamily:'inherit',caretColor:'transparent'}}/>
+              style={{width:54,height:58,textAlign:'center',fontSize:'24px',borderRadius:10,
+                border:`1.5px solid ${d?'var(--amb)':'var(--border)'}`,
+                background:d?'var(--amb-bg)':'var(--bg-primary)',
+                color:'var(--text-primary)',outline:'none',fontFamily:'inherit',caretColor:'transparent'}}/>
           ))}
         </div>
-        {shake&&<p style={{fontSize:'12px',color:'#A32D2D',margin:'0 0 8px'}}>Incorrect PIN. Try again.</p>}
+        {shake&&<p style={{fontSize:'12px',color:'#e05555',margin:'0 0 8px'}}>Incorrect PIN. Try again.</p>}
         <p style={{fontSize:'11px',color:'var(--text-tertiary)',marginTop:'1.5rem'}}>Default PIN is 1234 — change it in Admin → Settings</p>
       </div>
     </div>
   )
 }
 
+// ── Customer Form ─────────────────────────────────────────────────────────────
 function CustomerForm({menu,onSubmit}) {
   const [form,setForm]=useState({name:'',phone:'',address:'',slot:'slot1',date:todayStr(),items:{},notes:''})
-  const [submitted,setSubmitted]=useState(false)
+  // activeOrder: { id, status, slot, date } — shown after submit, persisted in localStorage
+  const [activeOrder,setActiveOrder]=useState(null)
   const [busy,setBusy]=useState(false)
   const [errors,setErrors]=useState({})
   const [locLoading,setLocLoading]=useState(false)
@@ -171,13 +328,20 @@ function CustomerForm({menu,onSubmit}) {
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}))
   const clr=k=>setErrors(e=>({...e,[k]:''}))
 
-  // Pre-fill from this browser only — no server call is ever made for customer data
+  // Restore profile and any active order from localStorage
   useEffect(()=>{
     try {
       const saved=localStorage.getItem('tiffinbox_user')
       if(saved) {
         const {name,phone,address}=JSON.parse(saved)
         setForm(f=>({...f,name:name||'',phone:phone||'',address:address||''}))
+      }
+    } catch {}
+    try {
+      const saved=JSON.parse(localStorage.getItem('tiffinbox_active_order')||'null')
+      // Only restore if not delivered/cancelled and placed today or future
+      if(saved&&saved.id&&saved.date>=todayStr()&&saved.status!=='delivered'&&saved.status!=='cancelled') {
+        setActiveOrder(saved)
       }
     } catch {}
   },[])
@@ -224,36 +388,38 @@ function CustomerForm({menu,onSubmit}) {
     try { localStorage.setItem('tiffinbox_user',JSON.stringify({name,phone,address})) } catch {}
     const gpsTag=coords?` [GPS: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]`:''
     const notes=form.notes.trim()+gpsTag
-    await onSubmit({...form,name,phone,address,notes})
-    setSubmitted(true); setBusy(false)
+    const order = await onSubmit({...form,name,phone,address,notes})
+    // Save active order to localStorage for tracker
+    const active = {id:order.id, status:'new', slot:form.slot, date:form.date}
+    try { localStorage.setItem('tiffinbox_active_order', JSON.stringify(active)) } catch {}
+    setActiveOrder(active)
+    setBusy(false)
   }
 
-  function reset() {
+  function handleNewOrder() {
+    try { localStorage.removeItem('tiffinbox_active_order') } catch {}
+    setActiveOrder(null)
     setForm(f=>({...f,items:{},notes:'',date:todayStr()}))
-    setCoords(null); setErrors({}); setSubmitted(false)
+    setCoords(null); setErrors({})
   }
 
-  if(submitted) return (
-    <div style={{maxWidth:480,margin:'5rem auto',padding:'0 1rem'}}>
-      <div style={{background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:16,padding:'2.5rem 2rem',textAlign:'center'}}>
-        <div style={{width:56,height:56,borderRadius:'50%',background:'#E1F5EE',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 1rem'}}>
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M5 13l4 4L19 7" stroke="#0F6E56" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-        </div>
-        <p style={{fontWeight:500,fontSize:'18px',margin:'0 0 8px'}}>Order placed!</p>
-        <p style={{fontSize:'14px',color:'var(--text-secondary)',margin:'0 0 1.5rem',lineHeight:1.6}}>
-          Your {SLOT_LABELS[form.slot].toLowerCase()} delivery for {fmtDate(form.date)} has been received. We'll confirm shortly.
-        </p>
-        <button onClick={reset} style={btnS}>Place another order</button>
-      </div>
-    </div>
-  )
+  // Show tracker if there's an active order
+  if(activeOrder) {
+    return <OrderTracker
+      orderId={activeOrder.id}
+      initialStatus={activeOrder.status}
+      slot={activeOrder.slot}
+      date={activeOrder.date}
+      onNewOrder={handleNewOrder}
+    />
+  }
 
   const totalItems=Object.values(form.items).reduce((a,b)=>a+b,0)
 
   return (
     <div style={{maxWidth:520,margin:'0 auto',padding:'1.5rem 1rem 4rem'}}>
       <div style={{marginBottom:'1.5rem'}}>
-        <h2 style={{fontSize:'20px',fontWeight:500,margin:'0 0 4px'}}>Place your order</h2>
+        <h2 style={{fontSize:'20px',fontWeight:500,margin:'0 0 4px',color:'var(--text-primary)'}}>Place your order</h2>
         <p style={{fontSize:'13px',color:'var(--text-secondary)',margin:0}}>We deliver twice daily — morning and afternoon</p>
       </div>
 
@@ -271,7 +437,7 @@ function CustomerForm({menu,onSubmit}) {
             <textarea style={{...inp,resize:'none',paddingRight:38}} placeholder="House no., street, area, landmark" rows={2}
               value={form.address} onChange={e=>{upd('address',e.target.value);clr('address')}}/>
             <button onClick={handleDetectLocation} title="Use my current location"
-              style={{position:'absolute',right:8,top:8,background:'none',border:'none',cursor:'pointer',fontSize:'16px',lineHeight:1,padding:2,color:locLoading?'var(--text-tertiary)':AMB}}>
+              style={{position:'absolute',right:8,top:8,background:'none',border:'none',cursor:'pointer',fontSize:'16px',lineHeight:1,padding:2,color:locLoading?'var(--text-tertiary)':'var(--amb)'}}>
               {locLoading?'…':'📍'}
             </button>
           </div>
@@ -284,9 +450,11 @@ function CustomerForm({menu,onSubmit}) {
             const sel=form.slot===s
             return (
               <button key={s} onClick={()=>upd('slot',s)}
-                style={{padding:'12px',borderRadius:8,border:`${sel?'2px':'0.5px'} solid ${sel?AMB:'var(--border)'}`,background:sel?AMB_BG:'var(--bg-primary)',cursor:'pointer',textAlign:'left'}}>
-                <div style={{fontSize:'13px',fontWeight:500,color:sel?AMB_DARK:'var(--text-primary)'}}>{s==='slot1'?'Slot 1':'Slot 2'}</div>
-                <div style={{fontSize:'12px',color:sel?AMB:'var(--text-secondary)',marginTop:2}}>{s==='slot1'?'Morning delivery':'Afternoon delivery'}</div>
+                style={{padding:'12px',borderRadius:8,
+                  border:`${sel?'2px':'0.5px'} solid ${sel?'var(--amb)':'var(--border)'}`,
+                  background:sel?'var(--amb-bg)':'var(--bg-primary)',cursor:'pointer',textAlign:'left'}}>
+                <div style={{fontSize:'13px',fontWeight:500,color:sel?'var(--amb-text)':'var(--text-primary)'}}>{s==='slot1'?'Slot 1':'Slot 2'}</div>
+                <div style={{fontSize:'12px',color:sel?'var(--amb)':'var(--text-secondary)',marginTop:2}}>{s==='slot1'?'Morning delivery':'Afternoon delivery'}</div>
               </button>
             )
           })}
@@ -301,20 +469,26 @@ function CustomerForm({menu,onSubmit}) {
           {menu.map(item=>{
             const qty=form.items[item]||0
             return (
-              <div key={item} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,border:`0.5px solid ${qty>0?AMB:'var(--border)'}`,background:qty>0?AMB_BG:'var(--bg-primary)'}}>
-                <span style={{fontSize:'14px',color:qty>0?AMB_DARK:'var(--text-primary)',fontWeight:qty>0?500:400}}>{item}</span>
+              <div key={item} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'10px 12px',borderRadius:8,
+                border:`0.5px solid ${qty>0?'var(--amb)':'var(--border)'}`,
+                background:qty>0?'var(--amb-bg)':'var(--bg-primary)'}}>
+                <span style={{fontSize:'14px',color:qty>0?'var(--amb-text)':'var(--text-primary)',fontWeight:qty>0?500:400}}>{item}</span>
                 <div style={{display:'flex',alignItems:'center',gap:8}}>
                   {qty>0&&<>
                     <button onClick={()=>updateQty(item,-1)} style={{width:28,height:28,borderRadius:'50%',border:'0.5px solid var(--border-med)',background:'var(--bg-primary)',cursor:'pointer',fontSize:'16px',display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text-primary)'}}>−</button>
-                    <span style={{fontWeight:500,minWidth:18,textAlign:'center',fontSize:'14px',color:AMB_DARK}}>{qty}</span>
+                    <span style={{fontWeight:500,minWidth:18,textAlign:'center',fontSize:'14px',color:'var(--amb-text)'}}>{qty}</span>
                   </>}
-                  <button onClick={()=>updateQty(item,1)} style={{width:28,height:28,borderRadius:'50%',border:`0.5px solid ${qty>0?AMB:'var(--border-med)'}`,background:qty>0?AMB:'var(--bg-primary)',cursor:'pointer',fontSize:'16px',display:'flex',alignItems:'center',justifyContent:'center',color:qty>0?'white':'var(--text-primary)'}}>+</button>
+                  <button onClick={()=>updateQty(item,1)} style={{width:28,height:28,borderRadius:'50%',
+                    border:`0.5px solid ${qty>0?'var(--amb)':'var(--border-med)'}`,
+                    background:qty>0?'var(--amb)':'var(--bg-primary)',
+                    cursor:'pointer',fontSize:'16px',display:'flex',alignItems:'center',justifyContent:'center',
+                    color:qty>0?'white':'var(--text-primary)'}}>+</button>
                 </div>
               </div>
             )
           })}
         </div>
-        {errors.items&&<p style={{color:'#A32D2D',fontSize:'12px',margin:'6px 0 0'}}>{errors.items}</p>}
+        {errors.items&&<p style={{color:'#e05555',fontSize:'12px',margin:'6px 0 0'}}>{errors.items}</p>}
       </Sec>
 
       <Sec title="Special instructions" optional>
@@ -330,7 +504,8 @@ function CustomerForm({menu,onSubmit}) {
   )
 }
 
-function AdminView({orders,menu,setOrders,setMenu,onLock}) {
+// ── Admin View ────────────────────────────────────────────────────────────────
+function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
   const [tab,setTab]=useState('orders')
   const [filterDate,setFilterDate]=useState(todayStr())
   const [filterSlot,setFilterSlot]=useState('all')
@@ -340,6 +515,13 @@ function AdminView({orders,menu,setOrders,setMenu,onLock}) {
   const [exporting,setExporting]=useState(false)
   const [selected,setSelected]=useState(new Set())
   const [saving,setSaving]=useState(null)
+  const [refreshing,setRefreshing]=useState(false)
+
+  async function manualRefresh() {
+    setRefreshing(true)
+    await onRefresh()
+    setRefreshing(false)
+  }
 
   const filtered=orders.filter(o=>{
     if(filterDate&&o.date!==filterDate) return false
@@ -361,11 +543,32 @@ function AdminView({orders,menu,setOrders,setMenu,onLock}) {
     {label:'Delivered',val:tod.filter(o=>o.status==='delivered').length},
   ]
 
-  async function updateStatus(id,status){setOrders(p=>p.map(o=>o.id===id?{...o,status}:o));setSaving(id);try{await apiPost('updateField',{id,field:'status',value:status})}catch{};setSaving(null)}
-  async function updatePayment(id,payment){setOrders(p=>p.map(o=>o.id===id?{...o,payment}:o));setSaving(id);try{await apiPost('updateField',{id,field:'payment',value:payment})}catch{};setSaving(null)}
+  async function updateStatus(id,status){
+    setOrders(p=>p.map(o=>o.id===id?{...o,status}:o))
+    setSaving(id)
+    try{await apiPost('updateField',{id,field:'status',value:status})}catch{}
+    setSaving(null)
+  }
+  async function updatePayment(id,payment){
+    setOrders(p=>p.map(o=>o.id===id?{...o,payment}:o))
+    setSaving(id)
+    try{await apiPost('updateField',{id,field:'payment',value:payment})}catch{}
+    setSaving(null)
+  }
   async function saveEdit(u){setOrders(p=>p.map(o=>o.id===u.id?u:o));setEditOrder(null);try{await apiPost('updateOrder',{order:u})}catch{}}
-  async function deleteOrder(id){if(!confirm('Delete this order?'))return;setOrders(p=>p.filter(o=>o.id!==id));setSelected(s=>{const n=new Set(s);n.delete(id);return n});try{await apiPost('deleteOrder',{id})}catch{}}
-  async function bulkStatus(status){if(!selected.size)return;const ids=[...selected];setOrders(p=>p.map(o=>ids.includes(o.id)?{...o,status}:o));setSelected(new Set());try{await apiPost('bulkStatus',{ids,status})}catch{}}
+  async function deleteOrder(id){
+    if(!confirm('Delete this order?'))return
+    setOrders(p=>p.filter(o=>o.id!==id))
+    setSelected(s=>{const n=new Set(s);n.delete(id);return n})
+    try{await apiPost('deleteOrder',{id})}catch{}
+  }
+  async function bulkStatus(status){
+    if(!selected.size)return
+    const ids=[...selected]
+    setOrders(p=>p.map(o=>ids.includes(o.id)?{...o,status}:o))
+    setSelected(new Set())
+    try{await apiPost('bulkStatus',{ids,status})}catch{}
+  }
 
   function exportExcel(){
     setExporting(true)
@@ -379,29 +582,41 @@ function AdminView({orders,menu,setOrders,setMenu,onLock}) {
 
   const sel={padding:'7px 10px',borderRadius:8,border:'0.5px solid var(--border)',background:'var(--bg-primary)',color:'var(--text-primary)',fontSize:'13px',cursor:'pointer',outline:'none',fontFamily:'inherit'}
   const allSel=filtered.length>0&&filtered.every(o=>selected.has(o.id))
-  function toggleAll(){if(allSel)setSelected(s=>{const n=new Set(s);filtered.forEach(o=>n.delete(o.id));return n});else setSelected(s=>{const n=new Set(s);filtered.forEach(o=>n.add(o.id));return n})}
+  function toggleAll(){
+    if(allSel)setSelected(s=>{const n=new Set(s);filtered.forEach(o=>n.delete(o.id));return n})
+    else setSelected(s=>{const n=new Set(s);filtered.forEach(o=>n.add(o.id));return n})
+  }
 
   return (
     <div style={{maxWidth:1200,margin:'0 auto',padding:'1.5rem 1rem 4rem'}}>
+      {/* Stats */}
       <div style={{display:'grid',gridTemplateColumns:'repeat(5,minmax(0,1fr))',gap:10,marginBottom:'1.5rem'}}>
         {stats.map(({label,val})=>(
           <div key={label} style={{background:'var(--bg-secondary)',borderRadius:8,padding:'12px 14px'}}>
             <div style={{fontSize:'11px',color:'var(--text-secondary)',marginBottom:5}}>{label}</div>
-            <div style={{fontSize:'26px',fontWeight:500}}>{val}</div>
+            <div style={{fontSize:'26px',fontWeight:500,color:'var(--text-primary)'}}>{val}</div>
           </div>
         ))}
       </div>
 
+      {/* Tabs + Lock + Refresh */}
       <div style={{display:'flex',alignItems:'center',borderBottom:'0.5px solid var(--border)',marginBottom:'1.25rem'}}>
         {[['orders','Orders'],['settings','Menu & Settings']].map(([k,lbl])=>(
           <button key={k} onClick={()=>setTab(k)}
-            style={{padding:'9px 16px',border:'none',background:'none',cursor:'pointer',fontSize:'14px',fontWeight:tab===k?500:400,color:tab===k?'var(--text-primary)':'var(--text-secondary)',borderBottom:tab===k?`2px solid ${AMB}`:'2px solid transparent',marginBottom:-1,fontFamily:'inherit'}}>
+            style={{padding:'9px 16px',border:'none',background:'none',cursor:'pointer',fontSize:'14px',fontWeight:tab===k?500:400,color:tab===k?'var(--text-primary)':'var(--text-secondary)',borderBottom:tab===k?`2px solid var(--amb)`:'2px solid transparent',marginBottom:-1,fontFamily:'inherit'}}>
             {lbl}
           </button>
         ))}
-        <button onClick={onLock} style={{marginLeft:'auto',background:'none',border:'none',cursor:'pointer',color:'var(--text-tertiary)',padding:'4px 8px',display:'flex',alignItems:'center',gap:5,fontSize:'12px',fontFamily:'inherit'}}>
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>Lock
-        </button>
+        <div style={{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}}>
+          <button onClick={manualRefresh} disabled={refreshing}
+            style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-tertiary)',padding:'4px 8px',display:'flex',alignItems:'center',gap:5,fontSize:'12px',fontFamily:'inherit',opacity:refreshing?0.5:1}}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{animation:refreshing?'spin 0.7s linear infinite':'none'}}><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+            {refreshing?'Refreshing…':'Refresh'}
+          </button>
+          <button onClick={onLock} style={{background:'none',border:'none',cursor:'pointer',color:'var(--text-tertiary)',padding:'4px 8px',display:'flex',alignItems:'center',gap:5,fontSize:'12px',fontFamily:'inherit'}}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>Lock
+          </button>
+        </div>
       </div>
 
       {tab==='orders'?(
@@ -448,10 +663,10 @@ function AdminView({orders,menu,setOrders,setMenu,onLock}) {
                   </thead>
                   <tbody>
                     {filtered.map((o,i)=>(
-                      <tr key={o.id} style={{borderBottom:i<filtered.length-1?'0.5px solid var(--border)':'none',background:selected.has(o.id)?AMB_BG:'transparent',opacity:saving===o.id?0.6:1,transition:'opacity 0.15s'}}>
+                      <tr key={o.id} style={{borderBottom:i<filtered.length-1?'0.5px solid var(--border)':'none',background:selected.has(o.id)?'var(--amb-bg)':'transparent',opacity:saving===o.id?0.6:1,transition:'opacity 0.15s'}}>
                         <td style={{padding:'10px 12px'}}><input type="checkbox" checked={selected.has(o.id)} onChange={()=>setSelected(s=>{const n=new Set(s);n.has(o.id)?n.delete(o.id):n.add(o.id);return n})} style={{cursor:'pointer'}}/></td>
                         <td style={{padding:'10px 12px',whiteSpace:'nowrap'}}>
-                          <div>{fmtDate(o.date)}</div>
+                          <div style={{color:'var(--text-primary)'}}>{fmtDate(o.date)}</div>
                           <div style={{fontSize:'11px',color:'var(--text-tertiary)'}}>{fmtTime(o.createdAt)}</div>
                         </td>
                         <td style={{padding:'10px 12px'}}>
@@ -459,13 +674,13 @@ function AdminView({orders,menu,setOrders,setMenu,onLock}) {
                           <div style={{fontSize:'11px',color:'var(--text-secondary)',marginTop:3}}>{o.slot==='slot1'?'Morning':'Afternoon'}</div>
                         </td>
                         <td style={{padding:'10px 12px',minWidth:140}}>
-                          <div style={{fontWeight:500}}>{o.name}</div>
+                          <div style={{fontWeight:500,color:'var(--text-primary)'}}>{o.name}</div>
                           <div style={{color:'var(--text-secondary)',fontSize:'12px'}}>{o.phone}</div>
                           <div style={{color:'var(--text-tertiary)',fontSize:'11px',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={o.address}>{o.address}</div>
                         </td>
                         <td style={{padding:'10px 12px',minWidth:160}}>
                           {Object.entries(o.items||{}).map(([item,qty])=>(
-                            <div key={item} style={{whiteSpace:'nowrap',fontSize:'12px'}}>{item} <span style={{color:'var(--text-secondary)'}}>×{qty}</span></div>
+                            <div key={item} style={{whiteSpace:'nowrap',fontSize:'12px',color:'var(--text-primary)'}}>{item} <span style={{color:'var(--text-secondary)'}}>×{qty}</span></div>
                           ))}
                           {o.notes&&<div style={{color:'var(--text-tertiary)',fontStyle:'italic',fontSize:'11px',marginTop:2}}>{o.notes}</div>}
                         </td>
@@ -477,14 +692,14 @@ function AdminView({orders,menu,setOrders,setMenu,onLock}) {
                         </td>
                         <td style={{padding:'10px 12px'}}>
                           <select value={o.payment||'pending'} onChange={e=>updatePayment(o.id,e.target.value)}
-                            style={{fontSize:'12px',padding:'4px 7px',borderRadius:5,border:'0.5px solid var(--border)',background:o.payment==='paid'?'#E1F5EE':'var(--bg-secondary)',color:o.payment==='paid'?'#0F6E56':'var(--text-secondary)',cursor:'pointer',outline:'none',fontFamily:'inherit',fontWeight:o.payment==='paid'?500:400}}>
+                            style={{fontSize:'12px',padding:'4px 7px',borderRadius:5,border:'0.5px solid var(--border)',background:o.payment==='paid'?'#d1fae5':'var(--bg-secondary)',color:o.payment==='paid'?'#065f46':'var(--text-secondary)',cursor:'pointer',outline:'none',fontFamily:'inherit',fontWeight:o.payment==='paid'?500:400}}>
                             <option value="pending">Pending</option><option value="paid">Paid</option>
                           </select>
                         </td>
                         <td style={{padding:'10px 12px'}}>
                           <div style={{display:'flex',gap:5}}>
-                            <button onClick={()=>setEditOrder({...o})} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid var(--border-med)',background:'transparent',cursor:'pointer',fontSize:'12px',fontFamily:'inherit'}}>Edit</button>
-                            <button onClick={()=>deleteOrder(o.id)} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid #F7C1C1',background:'transparent',cursor:'pointer',fontSize:'12px',color:'#A32D2D',fontFamily:'inherit'}}>Del</button>
+                            <button onClick={()=>setEditOrder({...o})} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid var(--border-med)',background:'transparent',cursor:'pointer',fontSize:'12px',fontFamily:'inherit',color:'var(--text-primary)'}}>Edit</button>
+                            <button onClick={()=>deleteOrder(o.id)} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid #fca5a5',background:'transparent',cursor:'pointer',fontSize:'12px',color:'#dc2626',fontFamily:'inherit'}}>Del</button>
                           </div>
                         </td>
                       </tr>
@@ -506,16 +721,17 @@ function AdminView({orders,menu,setOrders,setMenu,onLock}) {
   )
 }
 
+// ── Edit Modal ────────────────────────────────────────────────────────────────
 function EditModal({order,menu,onSave,onClose}) {
   const [form,setForm]=useState({...order})
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}))
   function updateQty(item,delta){setForm(f=>{const items={...f.items};const next=Math.max(0,(items[item]||0)+delta);if(next===0)delete items[item];else items[item]=next;return{...f,items}})}
   const allItems=[...new Set([...menu,...Object.keys(order.items||{})])]
   return (
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.45)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'1rem'}}>
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:'1rem'}}>
       <div style={{background:'var(--bg-primary)',borderRadius:16,border:'0.5px solid var(--border)',width:'100%',maxWidth:540,maxHeight:'90vh',overflow:'auto',padding:'1.5rem'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1.25rem'}}>
-          <p style={{fontWeight:500,fontSize:'16px',margin:0}}>Edit order</p>
+          <p style={{fontWeight:500,fontSize:'16px',margin:0,color:'var(--text-primary)'}}>Edit order</p>
           <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',fontSize:'20px',color:'var(--text-secondary)',padding:'0 4px',lineHeight:1}}>×</button>
         </div>
         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}}>
@@ -534,12 +750,14 @@ function EditModal({order,menu,onSave,onClose}) {
             {allItems.map(item=>{
               const qty=form.items[item]||0
               return (
-                <div key={item} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 10px',borderRadius:8,border:`0.5px solid ${qty>0?AMB:'var(--border)'}`,background:qty>0?AMB_BG:'var(--bg-secondary)'}}>
-                  <span style={{fontSize:'13px',color:qty>0?AMB_DARK:'var(--text-primary)'}}>{item}</span>
+                <div key={item} style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 10px',borderRadius:8,
+                  border:`0.5px solid ${qty>0?'var(--amb)':'var(--border)'}`,
+                  background:qty>0?'var(--amb-bg)':'var(--bg-secondary)'}}>
+                  <span style={{fontSize:'13px',color:qty>0?'var(--amb-text)':'var(--text-primary)'}}>{item}</span>
                   <div style={{display:'flex',alignItems:'center',gap:8}}>
-                    <button onClick={()=>updateQty(item,-1)} style={{width:26,height:26,borderRadius:'50%',border:'0.5px solid var(--border-med)',background:'var(--bg-primary)',cursor:'pointer',fontSize:'15px',display:'flex',alignItems:'center',justifyContent:'center'}}>−</button>
-                    <span style={{fontWeight:500,minWidth:18,textAlign:'center',fontSize:'13px'}}>{qty}</span>
-                    <button onClick={()=>updateQty(item,1)} style={{width:26,height:26,borderRadius:'50%',border:`0.5px solid ${qty>0?AMB:'var(--border-med)'}`,background:qty>0?AMB:'var(--bg-primary)',cursor:'pointer',fontSize:'15px',display:'flex',alignItems:'center',justifyContent:'center',color:qty>0?'white':'var(--text-primary)'}}>+</button>
+                    <button onClick={()=>updateQty(item,-1)} style={{width:26,height:26,borderRadius:'50%',border:'0.5px solid var(--border-med)',background:'var(--bg-primary)',cursor:'pointer',fontSize:'15px',display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text-primary)'}}>−</button>
+                    <span style={{fontWeight:500,minWidth:18,textAlign:'center',fontSize:'13px',color:'var(--text-primary)'}}>{qty}</span>
+                    <button onClick={()=>updateQty(item,1)} style={{width:26,height:26,borderRadius:'50%',border:`0.5px solid ${qty>0?'var(--amb)':'var(--border-med)'}`,background:qty>0?'var(--amb)':'var(--bg-primary)',cursor:'pointer',fontSize:'15px',display:'flex',alignItems:'center',justifyContent:'center',color:qty>0?'white':'var(--text-primary)'}}>+</button>
                   </div>
                 </div>
               )
@@ -559,6 +777,7 @@ function EditModal({order,menu,onSave,onClose}) {
   )
 }
 
+// ── Settings Tab ──────────────────────────────────────────────────────────────
 function SettingsTab({menu,setMenu}) {
   const [newItem,setNewItem]=useState('')
   const [dragIdx,setDragIdx]=useState(null)
@@ -569,7 +788,7 @@ function SettingsTab({menu,setMenu}) {
   const [pinNew2,setPinNew2]=useState('')
   const [pinMsg,setPinMsg]=useState(null)
 
-  async function saveMenu(newMenu){setMenu(newMenu);setSavingMenu(true);try{await apiPost('updateMenu',{menu:newMenu})}catch{};setSavingMenu(false)}
+  async function saveMenu(m){setMenu(m);setSavingMenu(true);try{await apiPost('updateMenu',{menu:m})}catch{};setSavingMenu(false)}
   async function addItem(){const t=newItem.trim();if(!t||menu.includes(t))return;await saveMenu([...menu,t]);setNewItem('')}
   async function removeItem(item){await saveMenu(menu.filter(m=>m!==item))}
   function handleDrop(idx){if(dragIdx===null||dragIdx===idx)return;const next=[...menu];const[moved]=next.splice(dragIdx,1);next.splice(idx,0,moved);saveMenu(next);setDragIdx(null);setOverIdx(null)}
@@ -582,7 +801,7 @@ function SettingsTab({menu,setMenu}) {
       const res=await apiPost('updatePin',{currentPin:pinCur,newPin:pinNew1})
       if(res.error){setPinMsg({err:true,text:res.error});return}
       setPinCur('');setPinNew1('');setPinNew2('');setPinMsg({err:false,text:'PIN updated successfully'})
-    } catch { setPinMsg({err:true,text:'Could not update PIN. Check your connection.'}) }
+    } catch {setPinMsg({err:true,text:'Could not update PIN. Check your connection.'})}
   }
 
   const pinInp={...inp,letterSpacing:'0.25em'}
@@ -590,19 +809,21 @@ function SettingsTab({menu,setMenu}) {
     <div style={{maxWidth:480,display:'flex',flexDirection:'column',gap:'1rem'}}>
       <div style={{background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)',padding:'1.25rem'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
-          <p style={{fontWeight:500,fontSize:'14px',margin:0}}>Menu items</p>
+          <p style={{fontWeight:500,fontSize:'14px',margin:0,color:'var(--text-primary)'}}>Menu items</p>
           {savingMenu&&<span style={{fontSize:'11px',color:'var(--text-tertiary)'}}>Saving…</span>}
         </div>
         <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:'0 0 1rem'}}>Drag to reorder. Updates the customer form instantly.</p>
         <div style={{display:'flex',flexDirection:'column',gap:6,marginBottom:'1rem'}}>
           {menu.map((item,i)=>(
             <div key={item} draggable onDragStart={()=>setDragIdx(i)} onDragOver={e=>{e.preventDefault();setOverIdx(i)}} onDrop={()=>handleDrop(i)} onDragEnd={()=>{setDragIdx(null);setOverIdx(null)}}
-              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'9px 12px',background:overIdx===i?AMB_BG:'var(--bg-secondary)',borderRadius:8,border:`0.5px solid ${overIdx===i?AMB:'var(--border)'}`,cursor:'grab'}}>
+              style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'9px 12px',
+                background:overIdx===i?'var(--amb-bg)':'var(--bg-secondary)',borderRadius:8,
+                border:`0.5px solid ${overIdx===i?'var(--amb)':'var(--border)'}`,cursor:'grab'}}>
               <div style={{display:'flex',alignItems:'center',gap:8}}>
                 <span style={{color:'var(--text-tertiary)',fontSize:'12px',userSelect:'none'}}>⠿</span>
-                <span style={{fontSize:'14px'}}>{item}</span>
+                <span style={{fontSize:'14px',color:'var(--text-primary)'}}>{item}</span>
               </div>
-              <button onClick={()=>removeItem(item)} style={{background:'none',border:'none',cursor:'pointer',color:'#A32D2D',fontSize:'12px',padding:'2px 6px',fontFamily:'inherit'}}>Remove</button>
+              <button onClick={()=>removeItem(item)} style={{background:'none',border:'none',cursor:'pointer',color:'#dc2626',fontSize:'12px',padding:'2px 6px',fontFamily:'inherit'}}>Remove</button>
             </div>
           ))}
         </div>
@@ -612,17 +833,18 @@ function SettingsTab({menu,setMenu}) {
         </div>
       </div>
       <div style={{background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)',padding:'1.25rem'}}>
-        <p style={{fontWeight:500,fontSize:'14px',margin:'0 0 1rem'}}>Change admin PIN</p>
+        <p style={{fontWeight:500,fontSize:'14px',margin:'0 0 1rem',color:'var(--text-primary)'}}>Change admin PIN</p>
         <Fld label="Current PIN"><input style={pinInp} type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pinCur} onChange={e=>setPinCur(e.target.value.replace(/\D/g,''))}/></Fld>
         <Fld label="New PIN (4 digits)"><input style={pinInp} type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pinNew1} onChange={e=>setPinNew1(e.target.value.replace(/\D/g,''))}/></Fld>
         <Fld label="Confirm new PIN"><input style={pinInp} type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pinNew2} onChange={e=>setPinNew2(e.target.value.replace(/\D/g,''))}/></Fld>
-        {pinMsg&&<p style={{fontSize:'12px',color:pinMsg.err?'#A32D2D':'#0F6E56',margin:'0 0 10px'}}>{pinMsg.text}</p>}
+        {pinMsg&&<p style={{fontSize:'12px',color:pinMsg.err?'#dc2626':'#059669',margin:'0 0 10px'}}>{pinMsg.text}</p>}
         <button onClick={changePin} style={btnP}>Update PIN</button>
       </div>
     </div>
   )
 }
 
+// ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [view,setView]=useState('customer')
   const [adminUnlocked,setAdminUnlocked]=useState(false)
@@ -631,7 +853,19 @@ export default function App() {
   const [loading,setLoading]=useState(true)
   const [error,setError]=useState(null)
 
+  const fetchOrders = useCallback(async()=>{
+    const data = await apiGet({action:'getOrders'})
+    setOrders(Array.isArray(data)?data:[])
+  },[])
+
   useEffect(()=>{loadData()},[])
+
+  // Auto-refresh orders every 30s while admin is open
+  useEffect(()=>{
+    if(view!=='admin'||!adminUnlocked) return
+    const t=setInterval(()=>fetchOrders().catch(()=>{}), POLL_INTERVAL)
+    return ()=>clearInterval(t)
+  },[view,adminUnlocked,fetchOrders])
 
   async function loadData(){
     if(!SCRIPT_URL){setLoading(false);return}
@@ -644,41 +878,50 @@ export default function App() {
     setLoading(false)
   }
 
+  // Returns the new order object so CustomerForm can save it for tracking
   async function handleNewOrder(order){
     const newOrder={...order,id:genId(),createdAt:new Date().toISOString(),status:'new',payment:'pending'}
     setOrders(prev=>[...prev,newOrder])
     try{await apiPost('submitOrder',{order:newOrder})}catch{}
+    return newOrder
   }
 
-  function switchView(v){if(v==='customer')setAdminUnlocked(false);setView(v)}
+  function switchView(v){
+    if(v==='customer') setAdminUnlocked(false)
+    // Refresh order list when switching to admin
+    if(v==='admin') fetchOrders().catch(()=>{})
+    setView(v)
+  }
 
-  if(!SCRIPT_URL) return <div style={{background:'var(--bg-secondary)',minHeight:'100vh'}}><Header view={view} onSwitch={switchView} adminUnlocked={adminUnlocked}/><SetupScreen/></div>
-  if(loading)     return <div style={{background:'var(--bg-secondary)',minHeight:'100vh'}}><Header view={view} onSwitch={switchView} adminUnlocked={adminUnlocked}/><Spinner/></div>
-  if(error)       return <div style={{background:'var(--bg-secondary)',minHeight:'100vh'}}><Header view={view} onSwitch={switchView} adminUnlocked={adminUnlocked}/><ErrorBanner message={error} onRetry={loadData}/></div>
+  if(!SCRIPT_URL) return <div style={{background:'var(--bg-secondary)',minHeight:'100vh'}}><style>{CSS}</style><Header view={view} onSwitch={switchView} adminUnlocked={adminUnlocked}/><SetupScreen/></div>
+  if(loading)     return <div style={{background:'var(--bg-secondary)',minHeight:'100vh'}}><style>{CSS}</style><Header view={view} onSwitch={switchView} adminUnlocked={adminUnlocked}/><Spinner/></div>
+  if(error)       return <div style={{background:'var(--bg-secondary)',minHeight:'100vh'}}><style>{CSS}</style><Header view={view} onSwitch={switchView} adminUnlocked={adminUnlocked}/><ErrorBanner message={error} onRetry={loadData}/></div>
 
   return (
     <div style={{background:'var(--bg-secondary)',minHeight:'100vh'}}>
+      <style>{CSS}</style>
       <Header view={view} onSwitch={switchView} adminUnlocked={adminUnlocked}/>
       {view==='customer'
         ?<CustomerForm menu={menu} onSubmit={handleNewOrder}/>
         :!adminUnlocked
           ?<PinGate onUnlock={()=>setAdminUnlocked(true)}/>
-          :<AdminView orders={orders} menu={menu} setOrders={setOrders} setMenu={setMenu} onLock={()=>setAdminUnlocked(false)}/>
+          :<AdminView orders={orders} menu={menu} setOrders={setOrders} setMenu={setMenu} onLock={()=>setAdminUnlocked(false)} onRefresh={fetchOrders}/>
       }
     </div>
   )
 }
 
+// ── Header ────────────────────────────────────────────────────────────────────
 function Header({view,onSwitch,adminUnlocked}) {
   return (
     <div style={{background:'var(--bg-primary)',borderBottom:'0.5px solid var(--border)',position:'sticky',top:0,zIndex:100}}>
       <div style={{maxWidth:1200,margin:'0 auto',padding:'0 1rem',display:'flex',alignItems:'center',justifyContent:'space-between',height:52}}>
         <div style={{display:'flex',alignItems:'center',gap:9}}>
-          <div style={{width:30,height:30,borderRadius:7,background:AMB,display:'flex',alignItems:'center',justifyContent:'center'}}>
+          <div style={{width:30,height:30,borderRadius:7,background:'var(--amb)',display:'flex',alignItems:'center',justifyContent:'center'}}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="white"><path d="M18.06 22.99h1.66c.84 0 1.53-.64 1.63-1.46L23 5.05h-5V1h-1.97v4.05h-4.97l.3 2.34c1.71.47 3.31 1.32 4.27 2.26 1.44 1.42 2.43 2.89 2.43 5.29v8.05zM1 21.99V21h15.03v.99c0 .55-.45 1-1.01 1H2.01c-.56 0-1.01-.45-1.01-1zm15.03-7c0-3.5-5.92-5-8.52-5-2.62 0-8.51 1.5-8.51 5v1h17.03v-1z"/></svg>
           </div>
-          <span style={{fontWeight:500,fontSize:'15px'}}>TiffinBox</span>
-          {view==='admin'&&adminUnlocked&&<span style={{fontSize:'11px',padding:'2px 8px',borderRadius:4,background:AMB_BG,color:AMB_DARK,fontWeight:500}}>Admin</span>}
+          <span style={{fontWeight:500,fontSize:'15px',color:'var(--text-primary)'}}>TiffinBox</span>
+          {view==='admin'&&adminUnlocked&&<span style={{fontSize:'11px',padding:'2px 8px',borderRadius:4,background:'var(--amb-bg)',color:'var(--amb-text)',fontWeight:500}}>Admin</span>}
         </div>
         <div style={{display:'flex',gap:3,background:'var(--bg-secondary)',padding:3,borderRadius:9}}>
           {[['customer','Order Form'],['admin','Admin Dashboard']].map(([v,lbl])=>(
