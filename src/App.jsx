@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import * as XLSX from 'xlsx'
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const SCRIPT_URL = import.meta.env.VITE_SCRIPT_URL
+const SCRIPT_URL   = import.meta.env.VITE_SCRIPT_URL
+const MAPPLS_KEY   = import.meta.env.VITE_MAPPLS_KEY
 const POLL_INTERVAL = 30_000 // admin refreshes every 30s
 const ORDER_POLL_INTERVAL = 15_000 // customer order tracker polls every 15s
 
@@ -54,22 +55,12 @@ const CSS = `
 function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,6) }
 function todayStr() { return new Date().toISOString().split('T')[0] }
 function fmtDate(d) {
-  if (!d) return '';
-  try {
-    // Check if it's already a string like "2026-04-05"
-    const datePart = d.includes('T') ? d.split('T')[0] : d;
-    const parsedDate = new Date(datePart);
-    
-    if (isNaN(parsedDate.getTime())) return d; // Return original if parsing fails
-
-    return parsedDate.toLocaleDateString('en-IN', {
-      day: '2-digit',
-      month: 'short',
-      year: 'numeric'
-    });
-  } catch {
-    return d; // Fallback to raw data if everything fails
-  }
+  try { return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) }
+  catch { return d }
+}
+function fmtTime(iso) {
+  try { return new Date(iso).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) }
+  catch { return '' }
 }
 
 // ── API ───────────────────────────────────────────────────────────────────────
@@ -147,7 +138,7 @@ function SetupScreen() {
         <h2 style={{fontSize:'18px',fontWeight:500,marginBottom:8,color:'var(--text-primary)'}}>One more step</h2>
         <p style={{fontSize:'14px',color:'var(--text-secondary)',marginBottom:'1.5rem',lineHeight:1.7}}>Add your Google Apps Script URL to connect the app to your Google Sheet database.</p>
         <div style={{background:'var(--bg-secondary)',borderRadius:10,padding:'1rem 1.25rem',marginBottom:'1.5rem'}}>
-          {['Deploy apps-script/Code.gs to your Google Sheet (see README)','Copy the deployment URL from Apps Script','In Vercel → Settings → Environment Variables, add VITE_SCRIPT_URL = your URL','Redeploy the project'].map((step,i)=>(
+          {['Deploy apps-script/Code.gs to your Google Sheet (see README)','Copy the deployment URL from Apps Script','In Vercel → Environment Variables, add VITE_SCRIPT_URL = your Apps Script URL','Also add VITE_MAPPLS_KEY = your Mappls REST key','Redeploy the project'].map((step,i)=>(
             <div key={i} style={{display:'flex',gap:10,marginBottom:8,fontSize:'13px'}}>
               <span style={{width:20,height:20,borderRadius:'50%',background:'var(--amb-bg)',color:'var(--amb-text)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:500,flexShrink:0}}>{i+1}</span>
               <span style={{color:'var(--text-primary)',lineHeight:1.5}}>{step}</span>
@@ -363,9 +354,17 @@ function CustomerForm({menu,onSubmit}) {
       async({coords:{latitude,longitude}})=>{
         setCoords({lat:latitude,lng:longitude})
         try {
-          const res=await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`)
+          // Use Mappls reverse geocoding — far better address quality for India
+          const url=MAPPLS_KEY
+            ?`https://search.mappls.com/search/address/rev-geocode?lat=${latitude}&lng=${longitude}&access_token=${MAPPLS_KEY}`
+            :`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`
+          const res=await fetch(url)
           const data=await res.json()
-          upd('address',data.display_name||`${latitude}, ${longitude}`); clr('address')
+          // Mappls returns results[0].formattedAddress; Nominatim returns display_name
+          const addr = MAPPLS_KEY
+            ? (data.results?.[0]?.formattedAddress || `${latitude}, ${longitude}`)
+            : (data.display_name || `${latitude}, ${longitude}`)
+          upd('address', addr); clr('address')
         } catch { upd('address',`${latitude}, ${longitude}`) }
         setLocLoading(false)
       },
