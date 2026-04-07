@@ -354,17 +354,26 @@ function CustomerForm({menu,onSubmit}) {
       async({coords:{latitude,longitude}})=>{
         setCoords({lat:latitude,lng:longitude})
         try {
-          // Use Mappls reverse geocoding — far better address quality for India
-          const url=MAPPLS_KEY
-            ?`https://search.mappls.com/search/address/rev-geocode?lat=${latitude}&lng=${longitude}&access_token=${MAPPLS_KEY}`
-            :`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`
-          const res=await fetch(url)
-          const data=await res.json()
-          // Mappls returns results[0].formattedAddress; Nominatim returns display_name
-          const addr = MAPPLS_KEY
-            ? (data.results?.[0]?.formattedAddress || `${latitude}, ${longitude}`)
-            : (data.display_name || `${latitude}, ${longitude}`)
-          upd('address', addr); clr('address')
+          let addr=`${latitude}, ${longitude}` // fallback
+          if(MAPPLS_KEY) {
+            // Correct Mappls REST reverse geocoding endpoint — key goes in the URL path, not as a query param
+            const url=`https://apis.mapmyindia.com/advancedmaps/v1/${MAPPLS_KEY}/rev_geocode?lat=${latitude}&lng=${longitude}`
+            const res=await fetch(url)
+            const data=await res.json()
+            const r=data?.results?.[0]
+            if(r) {
+              // Build address from individual fields for clean Indian address formatting
+              addr=[r.houseNumber,r.houseName,r.street,r.subLocality,r.locality,r.city,r.state,r.pincode]
+                .filter(Boolean).join(', ')
+            }
+          } else {
+            // Fallback: Nominatim (OpenStreetMap) when no Mappls key is configured
+            const url=`https://nominatim.openstreetmap.org/reverse?format=json&lat=${latitude}&lon=${longitude}`
+            const res=await fetch(url)
+            const data=await res.json()
+            addr=data.display_name||addr
+          }
+          upd('address',addr); clr('address')
         } catch { upd('address',`${latitude}, ${longitude}`) }
         setLocLoading(false)
       },
