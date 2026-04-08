@@ -359,8 +359,7 @@ function AdminMapModal({ pin, customerName, onClose }) {
   )
 }
 
-// ── UPI QR code rendered on canvas (no external request, no CORS issues) ────
-// Tiny QR encoder using the qrcodegen library loaded from CDN once
+// ── UPI QR: renders via qrcodejs then converts canvas→img so screenshots work ──
 let qrLib = null
 function loadQrLib() {
   if (qrLib) return Promise.resolve(qrLib)
@@ -372,41 +371,151 @@ function loadQrLib() {
     document.head.appendChild(s)
   })
 }
-function UpiQR({ upiId, upiName, orderId }) {
-  const divRef = useRef(null)
+function UpiQR({ upiId, upiName, orderId, size = 220 }) {
+  const [imgSrc, setImgSrc] = useState(null)
+  const [err, setErr]       = useState(false)
   const upiLink = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`
+
   useEffect(() => {
-    if (!divRef.current) return
-    divRef.current.innerHTML = ''
+    setImgSrc(null); setErr(false)
+    const container = document.createElement('div')
     loadQrLib().then(QRCode => {
-      new QRCode(divRef.current, {
-        text: upiLink, width: 140, height: 140,
+      new QRCode(container, {
+        text: upiLink, width: size, height: size,
         colorDark: '#000000', colorLight: '#ffffff',
         correctLevel: QRCode.CorrectLevel.M,
       })
-    }).catch(() => {
-      if (divRef.current) divRef.current.innerHTML = '<p style="font-size:11px;color:#999;text-align:center">QR unavailable</p>'
-    })
-  }, [upiLink])
-  return (
-    <div style={{display:'flex',justifyContent:'center'}}>
-      <div ref={divRef} style={{borderRadius:8,overflow:'hidden',border:'0.5px solid var(--border)',display:'inline-block'}}/>
+      // qrcodejs appends a canvas; wait one tick then extract as data URL
+      setTimeout(() => {
+        const canvas = container.querySelector('canvas')
+        if (canvas) { setImgSrc(canvas.toDataURL('image/png')) }
+        else {
+          const img = container.querySelector('img')
+          if (img) setImgSrc(img.src)
+          else setErr(true)
+        }
+      }, 100)
+    }).catch(() => setErr(true))
+  }, [upiLink, size])
+
+  if (err) return <p style={{fontSize:'11px',color:'#999',textAlign:'center'}}>QR unavailable</p>
+  if (!imgSrc) return (
+    <div style={{width:size,height:size,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto'}}>
+      <div style={{width:24,height:24,border:'3px solid #eee',borderTopColor:'#aaa',borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/>
     </div>
+  )
+  return (
+    <img src={imgSrc} width={size} height={size} alt="UPI QR code"
+      style={{display:'block',margin:'0 auto',imageRendering:'pixelated',borderRadius:4}}/>
   )
 }
 
-// ── UPI Pay Panel: QR toggle + copy UPI ID (no deep links / security issues) ──
+// ── UPI QR Modal — fullscreen, screenshot-friendly, record payment ────────────
+function UpiQrModal({ upiId, upiName, orderId, onClose, onRecorded }) {
+  const [recorded, setRecorded] = useState(false)
+
+  const UPI_APPS = [
+    { name: 'Google Pay', color: '#4285F4',
+      scheme: `tez://upi/pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
+      fallback: `gpay://upi/pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR` },
+    { name: 'PhonePe', color: '#5F259F',
+      scheme: `phonepe://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
+      fallback: null },
+    { name: 'Paytm', color: '#00BAF2',
+      scheme: `paytmmp://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
+      fallback: `paytm://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR` },
+    { name: 'BHIM', color: '#FF6600',
+      scheme: `upi://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
+      fallback: null },
+  ]
+
+  function openApp(app) {
+    // Open in new tab so the page stays loaded; browser switches to the app
+    const a = document.createElement('a')
+    a.href = app.scheme
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+    if (app.fallback) setTimeout(() => {
+      const b = document.createElement('a')
+      b.href = app.fallback; b.target = '_blank'; b.rel = 'noopener noreferrer'
+      document.body.appendChild(b); b.click(); document.body.removeChild(b)
+    }, 1500)
+  }
+
+  async function handleRecord() {
+    setRecorded(true)
+    try { await apiPost('updateField', { id: orderId, field: 'payment', value: 'paid' }) } catch {}
+    onRecorded()
+  }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',zIndex:3000,padding:'1rem',overflowY:'auto'}}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose() }}>
+      <div style={{background:'#ffffff',borderRadius:20,padding:'1.5rem',width:'100%',maxWidth:340,textAlign:'center',boxShadow:'0 24px 60px rgba(0,0,0,0.4)'}}>
+
+        {/* Header */}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1rem'}}>
+          <div style={{textAlign:'left'}}>
+            <p style={{fontWeight:600,fontSize:'15px',margin:0,color:'#111'}}>Pay via UPI</p>
+            <p style={{fontSize:'11px',color:'#888',margin:'3px 0 0',fontFamily:'monospace'}}>{upiId}</p>
+          </div>
+          <button onClick={onClose} style={{background:'#f3f4f6',border:'none',cursor:'pointer',borderRadius:'50%',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'16px',color:'#555',lineHeight:1}}>×</button>
+        </div>
+
+        {/* App buttons */}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:'1rem'}}>
+          {UPI_APPS.map(app => (
+            <button key={app.name} onClick={()=>openApp(app)}
+              style={{padding:'10px 8px',borderRadius:10,border:`1.5px solid ${app.color}33`,
+                background:`${app.color}0f`,cursor:'pointer',fontFamily:'inherit',
+                display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+                fontSize:'12px',fontWeight:600,color:app.color}}>
+              <span style={{width:8,height:8,borderRadius:'50%',background:app.color,flexShrink:0}}/>
+              {app.name}
+            </button>
+          ))}
+        </div>
+
+        {/* Divider */}
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:'1rem'}}>
+          <div style={{flex:1,height:'0.5px',background:'#e5e7eb'}}/>
+          <span style={{fontSize:'11px',color:'#aaa',fontWeight:500}}>or scan QR</span>
+          <div style={{flex:1,height:'0.5px',background:'#e5e7eb'}}/>
+        </div>
+
+        {/* QR — pure white background, renders as <img> so screenshots capture it */}
+        <div style={{background:'#ffffff',padding:12,borderRadius:12,border:'1px solid #e5e7eb',marginBottom:'1rem',display:'inline-block'}}>
+          <UpiQR upiId={upiId} upiName={upiName} orderId={orderId} size={220}/>
+        </div>
+
+        {/* Record payment */}
+        {recorded ? (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,padding:'10px',borderRadius:10,background:'#d1fae5',color:'#065f46',fontWeight:500,fontSize:'13px'}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>
+            Payment recorded
+          </div>
+        ) : (
+          <button onClick={handleRecord}
+            style={{width:'100%',padding:'11px',borderRadius:10,border:'none',background:'#16a34a',color:'white',fontWeight:500,fontSize:'14px',cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>
+            Mark as paid
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+// ── UPI Pay Panel: copy UPI ID + open QR modal ───────────────────────────────
 function UpiPayPanel({ upiId, upiName, orderId }) {
-  const [showQr, setShowQr] = useState(false)
   const [copied, setCopied] = useState(false)
+  const [showQr, setShowQr] = useState(false)
+  const [paid,   setPaid]   = useState(false)
 
   function copyUpiId() {
-    const doCopy = () => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
+    const doCopy = () => { setCopied(true); setTimeout(() => setCopied(false), 2000) }
     if (navigator.clipboard) {
-      navigator.clipboard.writeText(upiId).then(doCopy).catch(() => fallbackCopy())
+      navigator.clipboard.writeText(upiId).then(doCopy).catch(fallbackCopy)
     } else { fallbackCopy() }
     function fallbackCopy() {
       const ta = document.createElement('textarea')
@@ -419,49 +528,60 @@ function UpiPayPanel({ upiId, upiName, orderId }) {
   }
 
   return (
-    <div style={{background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:12,padding:'1rem 1.25rem',marginBottom:12}}>
-      <p style={{fontWeight:500,fontSize:'13px',margin:'0 0 10px',color:'var(--text-primary)'}}>Pay via UPI</p>
+    <>
+      <div style={{background:'var(--bg-primary)',border:`0.5px solid ${paid?'#6ee7b7':'var(--border)'}`,borderRadius:12,padding:'1rem 1.25rem',marginBottom:12,transition:'border-color 0.3s'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <p style={{fontWeight:500,fontSize:'13px',margin:0,color:'var(--text-primary)'}}>Pay via UPI</p>
+          {paid && (
+            <span style={{fontSize:'11px',padding:'3px 8px',borderRadius:4,background:'#d1fae5',color:'#065f46',fontWeight:500,display:'flex',alignItems:'center',gap:4}}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>
+              Paid
+            </span>
+          )}
+        </div>
 
-      {/* UPI ID + copy button */}
-      <div style={{display:'flex',alignItems:'center',gap:8,background:'var(--bg-secondary)',borderRadius:8,padding:'9px 12px',marginBottom:10}}>
-        <span style={{fontFamily:'monospace',fontSize:'13px',color:'var(--text-primary)',flex:1,wordBreak:'break-all'}}>{upiId}</span>
-        <button onClick={copyUpiId}
-          style={{flexShrink:0,padding:'5px 12px',borderRadius:6,
-            border:`0.5px solid ${copied?'#6ee7b7':'var(--border-med)'}`,
-            background:copied?'#d1fae5':'var(--bg-primary)',
-            color:copied?'#065f46':'var(--text-secondary)',
-            cursor:'pointer',fontSize:'12px',fontWeight:500,fontFamily:'inherit',
-            display:'flex',alignItems:'center',gap:5,transition:'all 0.2s'}}>
-          {copied
-            ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>Copied!</>
-            : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</>
-          }
+        {/* UPI ID + copy */}
+        <div style={{display:'flex',alignItems:'center',gap:8,background:'var(--bg-secondary)',borderRadius:8,padding:'9px 12px',marginBottom:10}}>
+          <span style={{fontFamily:'monospace',fontSize:'13px',color:'var(--text-primary)',flex:1,wordBreak:'break-all'}}>{upiId}</span>
+          <button onClick={copyUpiId}
+            style={{flexShrink:0,padding:'5px 12px',borderRadius:6,
+              border:`0.5px solid ${copied?'#6ee7b7':'var(--border-med)'}`,
+              background:copied?'#d1fae5':'var(--bg-primary)',
+              color:copied?'#065f46':'var(--text-secondary)',
+              cursor:'pointer',fontSize:'12px',fontWeight:500,fontFamily:'inherit',
+              display:'flex',alignItems:'center',gap:5,transition:'all 0.2s'}}>
+            {copied
+              ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>Copied!</>
+              : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</>
+            }
+          </button>
+        </div>
+
+        <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'0 0 10px',lineHeight:1.6}}>
+          Open any UPI app, tap <strong style={{color:'var(--text-secondary)'}}>Pay by UPI ID</strong>, paste above — or tap the button to scan the QR.
+        </p>
+
+        <button onClick={()=>setShowQr(true)}
+          style={{width:'100%',padding:'10px',borderRadius:8,border:'none',
+            background:'var(--amb)',color:'white',
+            cursor:'pointer',fontSize:'13px',fontWeight:500,fontFamily:'inherit',
+            display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+            <path d="M14 14h.01M14 17h.01M17 14h.01M17 17h3M20 14v.01"/>
+          </svg>
+          Show QR &amp; Record Payment
         </button>
       </div>
 
-      <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'0 0 10px',lineHeight:1.6}}>
-        Open any UPI app (GPay, PhonePe, Paytm, BHIM…), tap <strong style={{color:'var(--text-secondary)'}}>Pay by UPI ID</strong>, paste the ID above and complete payment.
-      </p>
-
-      {/* QR code toggle */}
-      <button onClick={()=>setShowQr(v=>!v)}
-        style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:7,
-          border:'0.5px solid var(--border-med)',background:'var(--bg-secondary)',
-          cursor:'pointer',fontSize:'12px',color:'var(--text-secondary)',fontFamily:'inherit'}}>
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
-          <path d="M14 14h.01M14 17h.01M17 14h.01M17 17h3M20 14v.01"/>
-        </svg>
-        {showQr ? 'Hide QR code' : 'Show QR code to scan'}
-      </button>
-
       {showQr && (
-        <div style={{marginTop:12,textAlign:'center'}}>
-          <UpiQR upiId={upiId} upiName={upiName} orderId={orderId}/>
-          <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'8px 0 0'}}>Scan with any UPI app camera</p>
-        </div>
+        <UpiQrModal
+          upiId={upiId} upiName={upiName} orderId={orderId}
+          onClose={()=>setShowQr(false)}
+          onRecorded={()=>{ setPaid(true); setTimeout(()=>setShowQr(false), 1200) }}
+        />
       )}
-    </div>
+    </>
   )
 }
 
