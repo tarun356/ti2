@@ -201,25 +201,44 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
       const map = new mappls.Map(mapRef.current, {
         center: defaultCenter, zoom: initialPin ? 16 : 12, search: false,
       })
-      map.on('load', () => {
-        if (cancelled) return
-        setLoading(false)
-        const startLat = initialPin ? initialPin.lat : 28.6139
-        const startLng = initialPin ? initialPin.lng : 77.2090
-        const marker = new mappls.Marker({ map, position: { lat: startLat, lng: startLng }, draggable: true })
-        markerRef.current = marker
-        if (initialPin) setPin(initialPin)
-        marker.on('dragend', () => {
-          const pos = marker.getPosition()
-          setPin({ lat: pos.lat, lng: pos.lng })
-        })
-        map.on('click', e => {
-          const lat = e.lngLat ? e.lngLat.lat : e.lat
-          const lng = e.lngLat ? e.lngLat.lng : e.lng
-          marker.setPosition({ lat, lng })
-          setPin({ lat, lng })
-        })
-      })
+
+      function setupMarker() {
+        if (cancelled || markerRef.current) return
+        try {
+          const startLat = initialPin ? initialPin.lat : 28.6139
+          const startLng = initialPin ? initialPin.lng : 77.2090
+          const marker = new mappls.Marker({ map, position: { lat: startLat, lng: startLng }, draggable: true })
+          markerRef.current = marker
+          if (initialPin) setPin(initialPin)
+          setLoading(false)
+          marker.on('dragend', () => {
+            const pos = marker.getPosition()
+            setPin({ lat: pos.lat, lng: pos.lng })
+          })
+          map.on('click', e => {
+            const lat = e.lngLat ? e.lngLat.lat : e.lat
+            const lng = e.lngLat ? e.lngLat.lng : e.lng
+            if (markerRef.current) markerRef.current.setPosition({ lat, lng })
+            setPin({ lat, lng })
+          })
+        } catch(_) { /* map not ready yet, poll will retry */ }
+      }
+
+      // Try immediately, then every 250ms until marker placed (max 10s)
+      setupMarker()
+      const poll = setInterval(() => {
+        if (cancelled || markerRef.current) { clearInterval(poll); return }
+        setupMarker()
+      }, 250)
+      const giveUp = setTimeout(() => {
+        clearInterval(poll)
+        if (!cancelled && !markerRef.current) { setError('Map took too long to load. Please close and try again.'); setLoading(false) }
+      }, 10000)
+
+      // Also listen for the load event — whichever fires first wins
+      map.on('load', () => { clearInterval(poll); clearTimeout(giveUp); setupMarker() })
+
+      return () => { clearInterval(poll); clearTimeout(giveUp) }
     }).catch(() => { setError('Could not load map. Check your Mappls key.'); setLoading(false) })
     return () => { cancelled = true }
   }, [])
@@ -278,11 +297,28 @@ function AdminMapModal({ pin, customerName, onClose }) {
     loadMapplsSDK().then(mappls => {
       if (cancelled || !mapRef.current) return
       const map = new mappls.Map(mapRef.current, { center: [pin.lat, pin.lng], zoom: 16, search: false })
-      map.on('load', () => {
-        if (cancelled) return
-        setLoading(false)
-        new mappls.Marker({ map, position: { lat: pin.lat, lng: pin.lng } })
-      })
+      let placed = false
+
+      function placeMarker() {
+        if (cancelled || placed) return
+        try {
+          new mappls.Marker({ map, position: { lat: pin.lat, lng: pin.lng } })
+          placed = true
+          setLoading(false)
+        } catch(_) { /* not ready yet */ }
+      }
+
+      placeMarker()
+      const poll = setInterval(() => {
+        if (cancelled || placed) { clearInterval(poll); return }
+        placeMarker()
+      }, 250)
+      const giveUp = setTimeout(() => {
+        clearInterval(poll)
+        if (!cancelled && !placed) { setError('Could not load map.'); setLoading(false) }
+      }, 10000)
+
+      map.on('load', () => { clearInterval(poll); clearTimeout(giveUp); placeMarker() })
     }).catch(() => { setError('Could not load map.'); setLoading(false) })
     return () => { cancelled = true }
   }, [])
@@ -963,6 +999,7 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
   const [filterDate,setFilterDate]=useState(todayStr())
   const [filterSlot,setFilterSlot]=useState('all')
   const [filterStatus,setFilterStatus]=useState('all')
+  const [filterPayment,setFilterPayment]=useState('all')
   const [search,setSearch]=useState('')
   const [editOrder,setEditOrder]=useState(null)
   const [exporting,setExporting]=useState(false)
@@ -971,26 +1008,25 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
   const [refreshing,setRefreshing]=useState(false)
   const [viewPinOrder,setViewPinOrder]=useState(null)
   const [payLogs,setPayLogs]=useState([])
-  const [payLogsLoaded,setPayLogsLoaded]=useState(false)
+
+  // Load payment redirect logs on mount
+  useEffect(()=>{ apiGet({action:'getPaymentRedirects'}).then(res=>setPayLogs(Array.isArray(res)?res:[])).catch(()=>{}) },[])
+
+  // Build redirect count map: orderId → number of redirects
+  const redirectCount = {}
+  payLogs.forEach(l => { redirectCount[l.orderId] = (redirectCount[l.orderId]||0)+1 })
 
   async function manualRefresh() {
     setRefreshing(true)
     await onRefresh()
     setRefreshing(false)
   }
-  async function loadPayLogs() {
-    if(payLogsLoaded) return
-    try {
-      const res = await apiGet({action:'getPaymentRedirects'})
-      setPayLogs(Array.isArray(res)?res:[])
-    } catch {}
-    setPayLogsLoaded(true)
-  }
 
   const filtered=orders.filter(o=>{
     if(filterDate&&o.date!==filterDate) return false
     if(filterSlot!=='all'&&o.slot!==filterSlot) return false
     if(filterStatus!=='all'&&o.status!==filterStatus) return false
+    if(filterPayment!=='all'&&(o.payment||'pending')!==filterPayment) return false
     if(search){
       const s=search.toLowerCase()
       if(!o.name.toLowerCase().includes(s)&&!o.phone.includes(s)&&!o.address.toLowerCase().includes(s)) return false
@@ -1004,7 +1040,7 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
     {label:'Slot 1',val:tod.filter(o=>o.slot==='slot1').length},
     {label:'Slot 2',val:tod.filter(o=>o.slot==='slot2').length},
     {label:'Active',val:tod.filter(o=>o.status!=='delivered'&&o.status!=='cancelled').length},
-    {label:'Delivered',val:tod.filter(o=>o.status==='delivered').length},
+    {label:'Paid today',val:tod.filter(o=>o.payment==='paid').length},
   ]
 
   async function updateStatus(id,status){
@@ -1072,8 +1108,8 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
 
       {/* Tabs + Lock + Refresh */}
       <div style={{display:'flex',alignItems:'center',borderBottom:'0.5px solid var(--border)',marginBottom:'1.25rem'}}>
-        {[['orders','Orders'],['payments','Payment Redirects'],['settings','Menu & Settings']].map(([k,lbl])=>(
-          <button key={k} onClick={()=>{setTab(k);if(k==='payments')loadPayLogs()}}
+        {[['orders','Orders'],['settings','Menu & Settings']].map(([k,lbl])=>(
+          <button key={k} onClick={()=>setTab(k)}
             style={{padding:'9px 16px',border:'none',background:'none',cursor:'pointer',fontSize:'14px',fontWeight:tab===k?500:400,color:tab===k?'var(--text-primary)':'var(--text-secondary)',borderBottom:tab===k?`2px solid var(--amb)`:'2px solid transparent',marginBottom:-1,fontFamily:'inherit'}}>
             {lbl}
           </button>
@@ -1090,9 +1126,7 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
         </div>
       </div>
 
-      {tab==='payments'?(
-        <PaymentLogsTab logs={payLogs} loaded={payLogsLoaded} orders={orders} onReload={()=>{setPayLogsLoaded(false);loadPayLogs()}}/>
-      ):tab==='orders'?(
+      {tab==='orders'?(
         <>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:'1rem'}}>
             <DatePicker value={filterDate} onChange={setFilterDate}/>
@@ -1102,6 +1136,11 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
             <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={sel}>
               <option value="all">All statuses</option>
               {Object.entries(STATUS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+            </select>
+            <select value={filterPayment} onChange={e=>setFilterPayment(e.target.value)} style={sel}>
+              <option value="all">All payments</option>
+              <option value="paid">Paid</option>
+              <option value="pending">Pending</option>
             </select>
             <input placeholder="Search name, phone, address…" value={search} onChange={e=>setSearch(e.target.value)} style={{...sel,minWidth:200}}/>
             <div style={{marginLeft:'auto',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
@@ -1132,7 +1171,7 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
                   <thead>
                     <tr style={{borderBottom:'0.5px solid var(--border)',background:'var(--bg-secondary)'}}>
                       <th style={{padding:'10px 12px',textAlign:'left'}}><input type="checkbox" checked={allSel} onChange={toggleAll} style={{cursor:'pointer'}}/></th>
-                      {['Date / Time','Slot','Customer','Items','Status','Payment','Actions'].map(h=>(
+                      {['Date / Time','Slot','Customer','Items','Status','Payment','UPI','Actions'].map(h=>(
                         <th key={h} style={{padding:'10px 12px',textAlign:'left',fontWeight:500,color:'var(--text-secondary)',whiteSpace:'nowrap',fontSize:'12px'}}>{h}</th>
                       ))}
                     </tr>
@@ -1173,6 +1212,18 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
                             {o.payment==='paid'?'✓ Paid':'Pending'}
                           </button>
                         </td>
+                        <td style={{padding:'10px 12px',textAlign:'center'}}>
+                          {redirectCount[o.id]
+                            ? <span title={`${redirectCount[o.id]} UPI redirect${redirectCount[o.id]>1?'s':''}`}
+                                style={{fontSize:'11px',padding:'2px 7px',borderRadius:4,
+                                  background:redirectCount[o.id]>2?'#fee2e2':redirectCount[o.id]>1?'#fef3c7':'#d1fae5',
+                                  color:redirectCount[o.id]>2?'#b91c1c':redirectCount[o.id]>1?'#92400e':'#065f46',
+                                  fontWeight:500,cursor:'default'}}>
+                                {redirectCount[o.id]}×{redirectCount[o.id]>1&&' ⚠'}
+                              </span>
+                            : <span style={{color:'var(--text-tertiary)',fontSize:'11px'}}>—</span>
+                          }
+                        </td>
                         <td style={{padding:'10px 12px'}}>
                           <div style={{display:'flex',gap:5}}>
                             {o.mapPin&&<button onClick={()=>setViewPinOrder(o)} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid var(--amb)',background:'var(--amb-bg)',cursor:'pointer',fontSize:'12px',fontFamily:'inherit',color:'var(--amb-text)'}}>📍 Pin</button>}
@@ -1185,8 +1236,11 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
                   </tbody>
                 </table>
               </div>
-              <div style={{padding:'8px 12px',borderTop:'0.5px solid var(--border)',fontSize:'12px',color:'var(--text-secondary)'}}>
-                {filtered.length} order{filtered.length!==1?'s':''} · {filtered.reduce((a,o)=>a+Object.values(o.items||{}).reduce((x,y)=>x+y,0),0)} total items
+              <div style={{padding:'8px 12px',borderTop:'0.5px solid var(--border)',fontSize:'12px',color:'var(--text-secondary)',display:'flex',gap:'1.5rem'}}>
+                <span>{filtered.length} order{filtered.length!==1?'s':''}</span>
+                <span>{filtered.reduce((a,o)=>a+Object.values(o.items||{}).reduce((x,y)=>x+y,0),0)} total items</span>
+                <span style={{color:'#065f46'}}>{filtered.filter(o=>o.payment==='paid').length} paid</span>
+                <span style={{color:'#92400e'}}>{filtered.filter(o=>o.payment!=='paid').length} pending</span>
               </div>
             </div>
           )}
@@ -1252,81 +1306,6 @@ function EditModal({order,menu,onSave,onClose}) {
           <button onClick={()=>onSave(form)} style={btnP}>Save changes</button>
         </div>
       </div>
-    </div>
-  )
-}
-
-// ── Payment Redirects Tab ────────────────────────────────────────────────────
-function PaymentLogsTab({ logs, loaded, orders, onReload }) {
-  const [filterDate, setFilterDate] = useState(todayStr())
-  const orderMap = Object.fromEntries((orders||[]).map(o=>[o.id,o]))
-
-  const filtered = logs.filter(l => !filterDate || (l.date||l.timestamp||'').startsWith(filterDate))
-    .sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp))
-
-  const redirectCount = {}
-  logs.forEach(l => { redirectCount[l.orderId] = (redirectCount[l.orderId]||0)+1 })
-
-  return (
-    <div>
-      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:'1rem',flexWrap:'wrap'}}>
-        <DatePicker value={filterDate} onChange={setFilterDate}/>
-        <span style={{fontSize:'12px',color:'var(--text-secondary)'}}>{filtered.length} redirect{filtered.length!==1?'s':''}</span>
-        <button onClick={onReload} style={{...btnS,marginLeft:'auto',display:'flex',alignItems:'center',gap:5,fontSize:'12px'}}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-          Reload
-        </button>
-      </div>
-      {!loaded ? (
-        <div style={{textAlign:'center',padding:'3rem',color:'var(--text-secondary)',fontSize:'13px'}}>Loading…</div>
-      ) : filtered.length === 0 ? (
-        <div style={{textAlign:'center',padding:'4rem 2rem',color:'var(--text-secondary)',background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)'}}>No payment redirects for this date</div>
-      ) : (
-        <div style={{background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)',overflow:'hidden'}}>
-          <div style={{overflowX:'auto'}}>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
-              <thead>
-                <tr style={{borderBottom:'0.5px solid var(--border)',background:'var(--bg-secondary)'}}>
-                  {['Time','Order ID','Customer','Phone','Amount','App','Payment','# Taps'].map(h=>(
-                    <th key={h} style={{padding:'10px 12px',textAlign:'left',fontWeight:500,color:'var(--text-secondary)',whiteSpace:'nowrap',fontSize:'12px'}}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((l,i)=>{
-                  const o = orderMap[l.orderId]
-                  const isPaid = o?.payment==='paid'
-                  return (
-                    <tr key={i} style={{borderBottom:i<filtered.length-1?'0.5px solid var(--border)':'none'}}>
-                      <td style={{padding:'10px 12px',whiteSpace:'nowrap',color:'var(--text-secondary)',fontSize:'12px'}}>{fmtTime(l.timestamp)}</td>
-                      <td style={{padding:'10px 12px',fontFamily:'monospace',fontSize:'11px',color:'var(--text-tertiary)'}}>{l.orderId}</td>
-                      <td style={{padding:'10px 12px',color:'var(--text-primary)',fontWeight:500}}>{o?.name||'—'}</td>
-                      <td style={{padding:'10px 12px',color:'var(--text-secondary)',fontSize:'12px'}}>{o?.phone||'—'}</td>
-                      <td style={{padding:'10px 12px',color:'var(--text-primary)'}}>{o?.amount?`₹${o.amount}`:'—'}</td>
-                      <td style={{padding:'10px 12px',fontSize:'11px',color:'var(--text-secondary)'}}>{l.app||'—'}</td>
-                      <td style={{padding:'10px 12px'}}>
-                        <span style={{fontSize:'11px',padding:'3px 8px',borderRadius:4,background:isPaid?'#d1fae5':'#fef3c7',color:isPaid?'#065f46':'#92400e',fontWeight:500}}>
-                          {isPaid?'✓ Paid':'Pending'}
-                        </span>
-                      </td>
-                      <td style={{padding:'10px 12px',textAlign:'center'}}>
-                        <span style={{fontSize:'12px',fontWeight:500,color:redirectCount[l.orderId]>1?'#e05555':'var(--text-secondary)'}}>
-                          {redirectCount[l.orderId]}{redirectCount[l.orderId]>1&&<span style={{fontSize:'10px',marginLeft:3}}>⚠</span>}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div style={{padding:'8px 12px',borderTop:'0.5px solid var(--border)',fontSize:'12px',color:'var(--text-secondary)',display:'flex',gap:'1.5rem'}}>
-            <span>{filtered.length} redirect{filtered.length!==1?'s':''}</span>
-            <span>{filtered.filter(l=>orderMap[l.orderId]?.payment==='paid').length} confirmed paid</span>
-            <span style={{color:'#e05555'}}>{Object.values(redirectCount).filter(c=>c>1).length} with multiple taps</span>
-          </div>
-        </div>
-      )}
     </div>
   )
 }
