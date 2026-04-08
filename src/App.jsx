@@ -395,11 +395,80 @@ function UpiQR({ upiId, upiName, orderId }) {
   )
 }
 
+// ── UPI Pay Panel: QR toggle + copy UPI ID (no deep links / security issues) ──
+function UpiPayPanel({ upiId, upiName, orderId }) {
+  const [showQr, setShowQr] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  function copyUpiId() {
+    const doCopy = () => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    }
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(upiId).then(doCopy).catch(() => fallbackCopy())
+    } else { fallbackCopy() }
+    function fallbackCopy() {
+      const ta = document.createElement('textarea')
+      ta.value = upiId
+      ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0'
+      document.body.appendChild(ta); ta.focus(); ta.select()
+      try { document.execCommand('copy'); doCopy() } catch {}
+      document.body.removeChild(ta)
+    }
+  }
+
+  return (
+    <div style={{background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:12,padding:'1rem 1.25rem',marginBottom:12}}>
+      <p style={{fontWeight:500,fontSize:'13px',margin:'0 0 10px',color:'var(--text-primary)'}}>Pay via UPI</p>
+
+      {/* UPI ID + copy button */}
+      <div style={{display:'flex',alignItems:'center',gap:8,background:'var(--bg-secondary)',borderRadius:8,padding:'9px 12px',marginBottom:10}}>
+        <span style={{fontFamily:'monospace',fontSize:'13px',color:'var(--text-primary)',flex:1,wordBreak:'break-all'}}>{upiId}</span>
+        <button onClick={copyUpiId}
+          style={{flexShrink:0,padding:'5px 12px',borderRadius:6,
+            border:`0.5px solid ${copied?'#6ee7b7':'var(--border-med)'}`,
+            background:copied?'#d1fae5':'var(--bg-primary)',
+            color:copied?'#065f46':'var(--text-secondary)',
+            cursor:'pointer',fontSize:'12px',fontWeight:500,fontFamily:'inherit',
+            display:'flex',alignItems:'center',gap:5,transition:'all 0.2s'}}>
+          {copied
+            ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>Copied!</>
+            : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</>
+          }
+        </button>
+      </div>
+
+      <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'0 0 10px',lineHeight:1.6}}>
+        Open any UPI app (GPay, PhonePe, Paytm, BHIM…), tap <strong style={{color:'var(--text-secondary)'}}>Pay by UPI ID</strong>, paste the ID above and complete payment.
+      </p>
+
+      {/* QR code toggle */}
+      <button onClick={()=>setShowQr(v=>!v)}
+        style={{display:'flex',alignItems:'center',gap:6,padding:'6px 12px',borderRadius:7,
+          border:'0.5px solid var(--border-med)',background:'var(--bg-secondary)',
+          cursor:'pointer',fontSize:'12px',color:'var(--text-secondary)',fontFamily:'inherit'}}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+          <path d="M14 14h.01M14 17h.01M17 14h.01M17 17h3M20 14v.01"/>
+        </svg>
+        {showQr ? 'Hide QR code' : 'Show QR code to scan'}
+      </button>
+
+      {showQr && (
+        <div style={{marginTop:12,textAlign:'center'}}>
+          <UpiQR upiId={upiId} upiName={upiName} orderId={orderId}/>
+          <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'8px 0 0'}}>Scan with any UPI app camera</p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── Order Tracker (customer-side, Swiggy-style) ───────────────────────────────
 function OrderTracker({orderId, initialStatus, slot, date, amount, onNewOrder}) {
   const [status, setStatus]   = useState(initialStatus || 'new')
   const [lastPoll, setLastPoll] = useState(null)
-  const [payRedirected, setPayRedirected] = useState(false)
   const cancelled = status === 'cancelled'
   const delivered = status === 'delivered'
   const done      = cancelled || delivered
@@ -509,45 +578,7 @@ function OrderTracker({orderId, initialStatus, slot, date, amount, onNewOrder}) 
 
       {/* ── UPI Payment Panel ── */}
       {!cancelled && UPI_ID && (
-        <div style={{background:'var(--bg-primary)',border:`0.5px solid ${payRedirected?'#86efac':'var(--border)'}`,borderRadius:12,padding:'1rem 1.25rem',marginBottom:12}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-            <div>
-              <p style={{fontWeight:500,fontSize:'13px',margin:'0 0 2px',color:'var(--text-primary)'}}>Pay via UPI</p>
-              <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:0,fontFamily:'monospace'}}>{UPI_ID}</p>
-            </div>
-            {payRedirected && <span style={{fontSize:'11px',color:'#059669',fontWeight:500}}>✓ Recorded</span>}
-          </div>
-          {/* QR — rendered on a canvas using a tiny inline QR library so no external image request */}
-          <UpiQR upiId={UPI_ID} upiName={UPI_NAME} orderId={orderId}/>
-          <p style={{fontSize:'11px',color:'var(--text-secondary)',margin:'10px 0 10px',textAlign:'center'}}>
-            Scan above, or open your UPI app directly:
-          </p>
-          {/* Per-app deep link buttons — no amount so customer types it in their app */}
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-            {[
-              {name:'Google Pay',  color:'#4285F4', scheme:`gpay://upi/pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,      fallback:`tez://upi/pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`},
-              {name:'PhonePe',     color:'#5F259F', scheme:`phonepe://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,        fallback:null},
-              {name:'Paytm',       color:'#00BAF2', scheme:`paytmmp://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,        fallback:`paytm://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`},
-              {name:'BHIM / Other',color:'#FF6600', scheme:`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,            fallback:null},
-            ].map(app=>(
-              <button key={app.name}
-                onClick={async()=>{
-                  try { await apiPost('logPaymentRedirect',{orderId, timestamp:new Date().toISOString(), app:app.name}) } catch {}
-                  setPayRedirected(true)
-                  window.location.href = app.scheme
-                  // Fallback after 1.5s if app not installed
-                  if(app.fallback) setTimeout(()=>{ window.location.href=app.fallback },1500)
-                }}
-                style={{padding:'10px 8px',borderRadius:8,border:`1.5px solid ${app.color}22`,
-                  background:`${app.color}11`,cursor:'pointer',fontFamily:'inherit',
-                  display:'flex',alignItems:'center',justifyContent:'center',gap:6,
-                  fontSize:'12px',fontWeight:500,color:app.color}}>
-                <span style={{width:8,height:8,borderRadius:'50%',background:app.color,flexShrink:0}}/>
-                {app.name}
-              </button>
-            ))}
-          </div>
-        </div>
+        <UpiPayPanel upiId={UPI_ID} upiName={UPI_NAME} orderId={orderId}/>
       )}
 
       <button onClick={onNewOrder} style={{...btnS,width:'100%',textAlign:'center'}}>
