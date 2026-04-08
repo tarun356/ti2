@@ -55,7 +55,12 @@ const CSS = `
   @keyframes tbox-slide-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 `
 
-function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,6) }
+function genId() {
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O/1/I to avoid confusion
+  let id=''
+  for(let i=0;i<4;i++) id+=chars[Math.floor(Math.random()*chars.length)]
+  return id
+}
 function todayStr() { return new Date().toISOString().split('T')[0] }
 function fmtDate(d) {
   try { return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) }
@@ -413,34 +418,29 @@ function UpiQR({ upiId, upiName, orderId, size = 220 }) {
 // ── UPI QR Modal — fullscreen, screenshot-friendly, record payment ────────────
 function UpiQrModal({ upiId, upiName, orderId, onClose, onRecorded }) {
   const [recorded, setRecorded] = useState(false)
+  const [copied,   setCopied]   = useState(false)
 
-  const UPI_APPS = [
-    { name: 'Google Pay', color: '#4285F4',
-      scheme: `tez://upi/pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
-      fallback: `gpay://upi/pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR` },
-    { name: 'PhonePe', color: '#5F259F',
-      scheme: `phonepe://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
-      fallback: null },
-    { name: 'Paytm', color: '#00BAF2',
-      scheme: `paytmmp://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
-      fallback: `paytm://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR` },
-    { name: 'BHIM', color: '#FF6600',
-      scheme: `upi://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`,
-      fallback: null },
-  ]
-
-  function openApp(app) {
-    // Open in new tab so the page stays loaded; browser switches to the app
+  // Generic UPI intent — OS shows installed UPI app picker, no pre-filled details
+  function openUpiPicker() {
     const a = document.createElement('a')
-    a.href = app.scheme
+    a.href = 'upi://pay'
     a.target = '_blank'
     a.rel = 'noopener noreferrer'
     document.body.appendChild(a); a.click(); document.body.removeChild(a)
-    if (app.fallback) setTimeout(() => {
-      const b = document.createElement('a')
-      b.href = app.fallback; b.target = '_blank'; b.rel = 'noopener noreferrer'
-      document.body.appendChild(b); b.click(); document.body.removeChild(b)
-    }, 1500)
+  }
+
+  function copyId() {
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 2000) }
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(upiId).then(done).catch(fb)
+    } else { fb() }
+    function fb() {
+      const ta = document.createElement('textarea')
+      ta.value = upiId; ta.style.cssText = 'position:fixed;opacity:0'
+      document.body.appendChild(ta); ta.focus(); ta.select()
+      try { document.execCommand('copy'); done() } catch {}
+      document.body.removeChild(ta)
+    }
   }
 
   async function handleRecord() {
@@ -455,27 +455,42 @@ function UpiQrModal({ upiId, upiName, orderId, onClose, onRecorded }) {
       <div style={{background:'#ffffff',borderRadius:20,padding:'1.5rem',width:'100%',maxWidth:340,textAlign:'center',boxShadow:'0 24px 60px rgba(0,0,0,0.4)'}}>
 
         {/* Header */}
-        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1rem'}}>
-          <div style={{textAlign:'left'}}>
-            <p style={{fontWeight:600,fontSize:'15px',margin:0,color:'#111'}}>Pay via UPI</p>
-            <p style={{fontSize:'11px',color:'#888',margin:'3px 0 0',fontFamily:'monospace'}}>{upiId}</p>
-          </div>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1.25rem'}}>
+          <p style={{fontWeight:600,fontSize:'15px',margin:0,color:'#111'}}>Pay via UPI</p>
           <button onClick={onClose} style={{background:'#f3f4f6',border:'none',cursor:'pointer',borderRadius:'50%',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'16px',color:'#555',lineHeight:1}}>×</button>
         </div>
 
-        {/* App buttons */}
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:'1rem'}}>
-          {UPI_APPS.map(app => (
-            <button key={app.name} onClick={()=>openApp(app)}
-              style={{padding:'10px 8px',borderRadius:10,border:`1.5px solid ${app.color}33`,
-                background:`${app.color}0f`,cursor:'pointer',fontFamily:'inherit',
-                display:'flex',alignItems:'center',justifyContent:'center',gap:6,
-                fontSize:'12px',fontWeight:600,color:app.color}}>
-              <span style={{width:8,height:8,borderRadius:'50%',background:app.color,flexShrink:0}}/>
-              {app.name}
-            </button>
-          ))}
+        {/* Copy UPI ID + Open app — single row */}
+        <div style={{display:'flex',gap:8,marginBottom:'1rem'}}>
+          {/* UPI ID pill */}
+          <div style={{flex:1,background:'#f9fafb',border:'1px solid #e5e7eb',borderRadius:10,padding:'9px 12px',display:'flex',alignItems:'center',minWidth:0}}>
+            <span style={{fontFamily:'monospace',fontSize:'12px',color:'#374151',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{upiId}</span>
+          </div>
+          {/* Copy button */}
+          <button onClick={copyId}
+            style={{flexShrink:0,padding:'9px 14px',borderRadius:10,border:`1px solid ${copied?'#6ee7b7':'#e5e7eb'}`,
+              background:copied?'#d1fae5':'#f9fafb',color:copied?'#065f46':'#6b7280',
+              cursor:'pointer',fontSize:'12px',fontWeight:500,fontFamily:'inherit',
+              display:'flex',alignItems:'center',gap:5,transition:'all 0.2s'}}>
+            {copied
+              ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>Copied</>
+              : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</>
+            }
+          </button>
         </div>
+
+        {/* Open UPI app button — generic picker, no pre-filled details */}
+        <button onClick={openUpiPicker}
+          style={{width:'100%',padding:'11px',borderRadius:10,border:'1.5px solid #6366f133',
+            background:'#6366f10f',color:'#4f46e5',fontWeight:600,fontSize:'13px',
+            cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8,
+            marginBottom:'1rem'}}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="currentColor" opacity="0.15"/>
+            <path d="M8 12h8M12 8l4 4-4 4"/>
+          </svg>
+          Open UPI App
+        </button>
 
         {/* Divider */}
         <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:'1rem'}}>
@@ -484,7 +499,7 @@ function UpiQrModal({ upiId, upiName, orderId, onClose, onRecorded }) {
           <div style={{flex:1,height:'0.5px',background:'#e5e7eb'}}/>
         </div>
 
-        {/* QR — pure white background, renders as <img> so screenshots capture it */}
+        {/* QR — pure white, renders as <img> so screenshots capture it */}
         <div style={{background:'#ffffff',padding:12,borderRadius:12,border:'1px solid #e5e7eb',marginBottom:'1rem',display:'inline-block'}}>
           <UpiQR upiId={upiId} upiName={upiName} orderId={orderId} size={220}/>
         </div>
