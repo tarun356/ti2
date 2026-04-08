@@ -5,6 +5,9 @@ import * as XLSX from 'xlsx'
 const SCRIPT_URL   = import.meta.env.VITE_SCRIPT_URL
 const MAPPLS_KEY   = import.meta.env.VITE_MAPPLS_KEY
 const POLL_INTERVAL = 30_000 // admin refreshes every 30s
+const UPI_ID       = import.meta.env.VITE_UPI_ID        // e.g. yourname@upi
+const UPI_NAME     = import.meta.env.VITE_UPI_NAME || 'TiffinBox' // display name
+const WA_NUMBER    = import.meta.env.VITE_WA_NUMBER     // e.g. 919876543210 (with country code, no +)
 const ORDER_POLL_INTERVAL = 15_000 // customer order tracker polls every 15s
 
 const SLOT_LABELS = { slot1: 'Slot 1 — Morning', slot2: 'Slot 2 — Afternoon' }
@@ -138,7 +141,7 @@ function SetupScreen() {
         <h2 style={{fontSize:'18px',fontWeight:500,marginBottom:8,color:'var(--text-primary)'}}>One more step</h2>
         <p style={{fontSize:'14px',color:'var(--text-secondary)',marginBottom:'1.5rem',lineHeight:1.7}}>Add your Google Apps Script URL to connect the app to your Google Sheet database.</p>
         <div style={{background:'var(--bg-secondary)',borderRadius:10,padding:'1rem 1.25rem',marginBottom:'1.5rem'}}>
-          {['Deploy apps-script/Code.gs to your Google Sheet (see README)','Copy the deployment URL from Apps Script','In Vercel → Environment Variables, add VITE_SCRIPT_URL = your Apps Script URL','Also add VITE_MAPPLS_KEY = your Mappls REST key','Redeploy the project'].map((step,i)=>(
+          {['Deploy apps-script/Code.gs to your Google Sheet (see README)','Copy the deployment URL from Apps Script','In Vercel → Environment Variables, add VITE_SCRIPT_URL = your Apps Script URL','Also add VITE_MAPPLS_KEY = your Mappls REST key','Add VITE_UPI_ID (e.g. yourname@upi), VITE_UPI_NAME, VITE_WA_NUMBER (country code + number)','Redeploy the project'].map((step,i)=>(
             <div key={i} style={{display:'flex',gap:10,marginBottom:8,fontSize:'13px'}}>
               <span style={{width:20,height:20,borderRadius:'50%',background:'var(--amb-bg)',color:'var(--amb-text)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:500,flexShrink:0}}>{i+1}</span>
               <span style={{color:'var(--text-primary)',lineHeight:1.5}}>{step}</span>
@@ -151,10 +154,169 @@ function SetupScreen() {
   )
 }
 
+// ── Mappls map SDK loader ─────────────────────────────────────────────────────
+let mapplsScriptPromise = null
+function loadMapplsSDK() {
+  if (mapplsScriptPromise) return mapplsScriptPromise
+  mapplsScriptPromise = new Promise((resolve, reject) => {
+    if (window.mappls) { resolve(window.mappls); return }
+    const s = document.createElement('script')
+    s.src = `https://apis.mappls.com/advancedmaps/api/${MAPPLS_KEY}/map_sdk?layer=vector&v=3.0`
+    s.onload = () => {
+      const wait = setInterval(() => {
+        if (window.mappls) { clearInterval(wait); resolve(window.mappls) }
+      }, 100)
+    }
+    s.onerror = reject
+    document.head.appendChild(s)
+  })
+  return mapplsScriptPromise
+}
+
+// ── Customer: Map Pin Picker Modal ────────────────────────────────────────────
+function MapPickerModal({ initialPin, onConfirm, onClose }) {
+  const mapRef    = useRef(null)
+  const markerRef = useRef(null)
+  const [pin, setPin]         = useState(initialPin || null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!MAPPLS_KEY) { setError('Mappls key not configured.'); setLoading(false); return }
+    loadMapplsSDK().then(mappls => {
+      if (cancelled || !mapRef.current) return
+      const defaultCenter = initialPin ? [initialPin.lat, initialPin.lng] : [28.6139, 77.2090]
+      const map = new mappls.Map(mapRef.current, {
+        center: defaultCenter, zoom: initialPin ? 16 : 12, search: false,
+      })
+      map.on('load', () => {
+        if (cancelled) return
+        setLoading(false)
+        const startLat = initialPin ? initialPin.lat : 28.6139
+        const startLng = initialPin ? initialPin.lng : 77.2090
+        const marker = new mappls.Marker({ map, position: { lat: startLat, lng: startLng }, draggable: true })
+        markerRef.current = marker
+        if (initialPin) setPin(initialPin)
+        marker.on('dragend', () => {
+          const pos = marker.getPosition()
+          setPin({ lat: pos.lat, lng: pos.lng })
+        })
+        map.on('click', e => {
+          const lat = e.lngLat ? e.lngLat.lat : e.lat
+          const lng = e.lngLat ? e.lngLat.lng : e.lng
+          marker.setPosition({ lat, lng })
+          setPin({ lat, lng })
+        })
+      })
+    }).catch(() => { setError('Could not load map. Check your Mappls key.'); setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2000,padding:'1rem'}}>
+      <div style={{background:'var(--bg-primary)',borderRadius:16,border:'0.5px solid var(--border)',width:'100%',maxWidth:540,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'1rem 1.25rem',borderBottom:'0.5px solid var(--border)'}}>
+          <div>
+            <p style={{fontWeight:500,fontSize:'15px',margin:0,color:'var(--text-primary)'}}>Pin your delivery location</p>
+            <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:'3px 0 0'}}>Drag the pin or tap the map to place it exactly</p>
+          </div>
+          <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',fontSize:'20px',color:'var(--text-secondary)',padding:'0 4px',lineHeight:1}}>×</button>
+        </div>
+        <div style={{position:'relative',height:360}}>
+          {loading && (
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg-secondary)',zIndex:1}}>
+              <div style={{width:24,height:24,border:'3px solid var(--amb-bg)',borderTopColor:'var(--amb)',borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/>
+            </div>
+          )}
+          {error && (
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg-secondary)',zIndex:1}}>
+              <p style={{fontSize:'13px',color:'#e05555',textAlign:'center',padding:'1rem'}}>{error}</p>
+            </div>
+          )}
+          <div ref={mapRef} style={{width:'100%',height:'100%'}}/>
+        </div>
+        <div style={{padding:'0.875rem 1.25rem',borderTop:'0.5px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
+          <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:0,flex:1}}>
+            {pin
+              ? <span style={{color:'var(--amb-text)',fontWeight:500}}>📍 Pin set ({pin.lat.toFixed(5)}, {pin.lng.toFixed(5)})</span>
+              : 'No pin placed yet — tap the map'}
+          </p>
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={onClose} style={btnS}>Cancel</button>
+            <button onClick={()=>pin&&onConfirm(pin)} disabled={!pin}
+              style={{...btnP,opacity:pin?1:0.5,cursor:pin?'pointer':'not-allowed'}}>
+              Confirm pin
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ── Admin: View Pin Modal ─────────────────────────────────────────────────────
+function AdminMapModal({ pin, customerName, onClose }) {
+  const mapRef              = useRef(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError]   = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    if (!MAPPLS_KEY) { setError('Mappls key not configured.'); setLoading(false); return }
+    loadMapplsSDK().then(mappls => {
+      if (cancelled || !mapRef.current) return
+      const map = new mappls.Map(mapRef.current, { center: [pin.lat, pin.lng], zoom: 16, search: false })
+      map.on('load', () => {
+        if (cancelled) return
+        setLoading(false)
+        new mappls.Marker({ map, position: { lat: pin.lat, lng: pin.lng } })
+      })
+    }).catch(() => { setError('Could not load map.'); setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:2000,padding:'1rem'}}>
+      <div style={{background:'var(--bg-primary)',borderRadius:16,border:'0.5px solid var(--border)',width:'100%',maxWidth:500,overflow:'hidden',display:'flex',flexDirection:'column'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'1rem 1.25rem',borderBottom:'0.5px solid var(--border)'}}>
+          <div>
+            <p style={{fontWeight:500,fontSize:'15px',margin:0,color:'var(--text-primary)'}}>Delivery pin — {customerName}</p>
+            <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:'3px 0 0'}}>{pin.lat.toFixed(6)}, {pin.lng.toFixed(6)}</p>
+          </div>
+          <button onClick={onClose} style={{background:'none',border:'none',cursor:'pointer',fontSize:'20px',color:'var(--text-secondary)',padding:'0 4px',lineHeight:1}}>×</button>
+        </div>
+        <div style={{position:'relative',height:340}}>
+          {loading && (
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg-secondary)',zIndex:1}}>
+              <div style={{width:24,height:24,border:'3px solid var(--amb-bg)',borderTopColor:'var(--amb)',borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/>
+            </div>
+          )}
+          {error && (
+            <div style={{position:'absolute',inset:0,display:'flex',alignItems:'center',justifyContent:'center',background:'var(--bg-secondary)',zIndex:1}}>
+              <p style={{fontSize:'13px',color:'#e05555',padding:'1rem',textAlign:'center'}}>{error}</p>
+            </div>
+          )}
+          <div ref={mapRef} style={{width:'100%',height:'100%'}}/>
+        </div>
+        <div style={{padding:'0.875rem 1.25rem',borderTop:'0.5px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <a href={`https://maps.google.com/?q=${pin.lat},${pin.lng}`} target="_blank" rel="noopener noreferrer"
+            style={{fontSize:'12px',color:'var(--amb)',textDecoration:'none',display:'flex',alignItems:'center',gap:4}}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            Open in Google Maps
+          </a>
+          <button onClick={onClose} style={btnS}>Close</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Order Tracker (customer-side, Swiggy-style) ───────────────────────────────
-function OrderTracker({orderId, initialStatus, slot, date, onNewOrder}) {
+function OrderTracker({orderId, initialStatus, slot, date, amount, onNewOrder}) {
   const [status, setStatus]   = useState(initialStatus || 'new')
   const [lastPoll, setLastPoll] = useState(null)
+  const [payRedirected, setPayRedirected] = useState(false)
   const cancelled = status === 'cancelled'
   const delivered = status === 'delivered'
   const done      = cancelled || delivered
@@ -262,9 +424,58 @@ function OrderTracker({orderId, initialStatus, slot, date, onNewOrder}) {
         </div>
       )}
 
+      {/* ── UPI Payment Panel ── */}
+      {!cancelled && UPI_ID && (
+        <div style={{background:'var(--bg-primary)',border:`0.5px solid ${payRedirected?'#86efac':'var(--border)'}`,borderRadius:12,padding:'1rem 1.25rem',marginBottom:12}}>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+            <p style={{fontWeight:500,fontSize:'13px',margin:0,color:'var(--text-primary)'}}>Pay via UPI</p>
+            {payRedirected && <span style={{fontSize:'11px',color:'#059669',fontWeight:500}}>✓ Redirect recorded</span>}
+          </div>
+          {/* QR code via Google Charts — encodes the UPI deep link */}
+          <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
+            <img
+              src={`https://chart.googleapis.com/chart?cht=qr&chs=120x120&chl=${encodeURIComponent(`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${amount||''}&tn=TiffinBox+Order+${orderId}&cu=INR`)}`}
+              alt="UPI QR" width={120} height={120}
+              style={{borderRadius:8,border:'0.5px solid var(--border)',flexShrink:0}}
+            />
+            <div style={{flex:1}}>
+              <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:'0 0 8px',lineHeight:1.5}}>
+                Scan with any UPI app, or tap the button below to open your UPI app directly.
+              </p>
+              <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'0 0 10px',fontFamily:'monospace'}}>{UPI_ID}</p>
+              <button
+                onClick={async()=>{
+                  // Record the redirect in the sheet
+                  try { await apiPost('logPaymentRedirect',{orderId, timestamp: new Date().toISOString()}) } catch {}
+                  setPayRedirected(true)
+                  // Open UPI deep link
+                  window.location.href=`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${amount||''}&tn=TiffinBox+Order+${orderId}&cu=INR`
+                }}
+                style={{...btnP,padding:'8px 14px',fontSize:'13px',display:'flex',alignItems:'center',gap:6}}>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+                Pay ₹{amount||'...'} now
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <button onClick={onNewOrder} style={{...btnS,width:'100%',textAlign:'center'}}>
         {done?'Place another order':'Place a new order'}
       </button>
+
+      {/* ── WhatsApp FAB ── */}
+      {WA_NUMBER && (
+        <a href={`https://wa.me/${WA_NUMBER}?text=${encodeURIComponent('Hi! I have a query about my TiffinBox order #'+orderId)}`}
+          target="_blank" rel="noopener noreferrer"
+          style={{position:'fixed',bottom:24,right:20,width:52,height:52,borderRadius:'50%',
+            background:'#25D366',display:'flex',alignItems:'center',justifyContent:'center',
+            boxShadow:'0 4px 16px rgba(0,0,0,0.22)',zIndex:500,textDecoration:'none'}}>
+          <svg width="26" height="26" viewBox="0 0 32 32" fill="white">
+            <path d="M16 3C9.373 3 4 8.373 4 15c0 2.385.832 4.584 2.22 6.34L4.06 28l6.82-2.14A11.94 11.94 0 0016 27c6.627 0 12-5.373 12-12S22.627 3 16 3zm0 2c5.523 0 10 4.477 10 10S21.523 25 16 25c-1.87 0-3.62-.516-5.11-1.41l-.37-.22-3.84 1.2 1.23-3.73-.25-.39A9.953 9.953 0 016 15c0-5.523 4.477-10 10-10zm-3.15 5.5c-.22 0-.57.08-.87.4-.3.32-1.14 1.11-1.14 2.71s1.17 3.15 1.33 3.37c.16.21 2.27 3.6 5.6 4.9 2.78 1.09 3.34.87 3.94.82.6-.05 1.94-.79 2.21-1.56.28-.77.28-1.43.2-1.57-.08-.13-.3-.21-.63-.37-.33-.16-1.94-.96-2.24-1.07-.3-.11-.51-.16-.73.16-.21.32-.83 1.07-1.02 1.29-.19.21-.38.24-.71.08-.33-.16-1.39-.51-2.65-1.63-.98-.87-1.64-1.94-1.83-2.27-.19-.33-.02-.51.14-.67.15-.15.33-.38.5-.57.16-.19.21-.32.32-.54.1-.21.05-.4-.03-.57-.08-.16-.72-1.77-.99-2.42-.26-.63-.53-.55-.73-.56-.19-.01-.4-.01-.62-.01z"/>
+          </svg>
+        </a>
+      )}
     </div>
   )
 }
@@ -324,7 +535,9 @@ function CustomerForm({menu,onSubmit}) {
   const [busy,setBusy]=useState(false)
   const [errors,setErrors]=useState({})
   const [locLoading,setLocLoading]=useState(false)
-  const [coords,setCoords]=useState(null)
+  const [mapPin,setMapPin]=useState(null)       // { lat, lng } — independent of text address
+  const [showMapPicker,setShowMapPicker]=useState(false)
+  const [repeatCount,setRepeatCount]=useState(1)
 
   const upd=(k,v)=>setForm(f=>({...f,[k]:v}))
   const clr=k=>setErrors(e=>({...e,[k]:''}))
@@ -352,7 +565,6 @@ function CustomerForm({menu,onSubmit}) {
     setLocLoading(true)
     navigator.geolocation.getCurrentPosition(
       async({coords:{latitude,longitude}})=>{
-        setCoords({lat:latitude,lng:longitude})
         try {
           let addr=`${latitude}, ${longitude}` // fallback
           if(MAPPLS_KEY) {
@@ -404,11 +616,14 @@ function CustomerForm({menu,onSubmit}) {
     setBusy(true)
     const name=form.name.trim(), phone=form.phone.trim(), address=form.address.trim()
     try { localStorage.setItem('tiffinbox_user',JSON.stringify({name,phone,address})) } catch {}
-    const gpsTag=coords?` [GPS: ${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)}]`:''
-    const notes=form.notes.trim()+gpsTag
-    const order = await onSubmit({...form,name,phone,address,notes})
-    // Save active order to localStorage for tracker
-    const active = {id:order.id, status:'new', slot:form.slot, date:form.date}
+    const notes=form.notes.trim()
+    // Place repeatCount identical orders; track only the last one in the tracker
+    let lastOrder = null
+    for(let i=0;i<repeatCount;i++){
+      const suffix = repeatCount>1 ? ` (${i+1}/${repeatCount})` : ''
+      lastOrder = await onSubmit({...form,name,phone,address,notes:notes+suffix,mapPin:mapPin||null})
+    }
+    const active = {id:lastOrder.id, status:'new', slot:form.slot, date:form.date, amount:lastOrder.amount||null}
     try { localStorage.setItem('tiffinbox_active_order', JSON.stringify(active)) } catch {}
     setActiveOrder(active)
     setBusy(false)
@@ -418,7 +633,7 @@ function CustomerForm({menu,onSubmit}) {
     try { localStorage.removeItem('tiffinbox_active_order') } catch {}
     setActiveOrder(null)
     setForm(f=>({...f,items:{},notes:'',date:todayStr()}))
-    setCoords(null); setErrors({})
+    setMapPin(null); setRepeatCount(1); setErrors({})
   }
 
   // Show tracker if there's an active order
@@ -428,6 +643,7 @@ function CustomerForm({menu,onSubmit}) {
       initialStatus={activeOrder.status}
       slot={activeOrder.slot}
       date={activeOrder.date}
+      amount={activeOrder.amount}
       onNewOrder={handleNewOrder}
     />
   }
@@ -460,6 +676,24 @@ function CustomerForm({menu,onSubmit}) {
             </button>
           </div>
         </Fld>
+        {/* Map pin picker — independent of text address */}
+        <div style={{marginTop:6}}>
+          <button onClick={()=>setShowMapPicker(true)}
+            style={{display:'flex',alignItems:'center',gap:7,padding:'8px 12px',borderRadius:8,
+              border:`0.5px solid ${mapPin?'var(--amb)':'var(--border-med)'}`,
+              background:mapPin?'var(--amb-bg)':'var(--bg-primary)',
+              cursor:'pointer',fontSize:'13px',color:mapPin?'var(--amb-text)':'var(--text-secondary)',fontFamily:'inherit'}}>
+            <span style={{fontSize:'15px'}}>🗺️</span>
+            {mapPin ? `Pin set (${mapPin.lat.toFixed(4)}, ${mapPin.lng.toFixed(4)})` : 'Pick exact location on map'}
+            {mapPin && (
+              <span onClick={e=>{e.stopPropagation();setMapPin(null)}}
+                style={{marginLeft:4,color:'var(--text-tertiary)',fontSize:'12px',lineHeight:1,cursor:'pointer'}}>✕</span>
+            )}
+          </button>
+          <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'4px 0 0'}}>
+            Optional — separate from the written address above
+          </p>
+        </div>
       </Sec>
 
       <Sec title="Delivery details">
@@ -514,10 +748,133 @@ function CustomerForm({menu,onSubmit}) {
           value={form.notes} onChange={e=>upd('notes',e.target.value)}/>
       </Sec>
 
+      {/* Repeat order stepper */}
+      <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}>
+        <p style={{fontSize:'13px',color:'var(--text-secondary)',margin:0,flex:1}}>How many orders?</p>
+        <div style={{display:'flex',alignItems:'center',gap:8,background:'var(--bg-primary)',border:'0.5px solid var(--border)',borderRadius:8,padding:'4px 8px'}}>
+          <button onClick={()=>setRepeatCount(c=>Math.max(1,c-1))}
+            style={{width:26,height:26,borderRadius:'50%',border:'0.5px solid var(--border-med)',background:'var(--bg-secondary)',cursor:'pointer',fontSize:'16px',display:'flex',alignItems:'center',justifyContent:'center',color:'var(--text-primary)',fontFamily:'inherit'}}>−</button>
+          <span style={{fontWeight:500,minWidth:24,textAlign:'center',fontSize:'15px',color:'var(--text-primary)'}}>{repeatCount}</span>
+          <button onClick={()=>setRepeatCount(c=>Math.min(10,c+1))}
+            style={{width:26,height:26,borderRadius:'50%',border:'0.5px solid var(--amb)',background:'var(--amb)',cursor:'pointer',fontSize:'16px',display:'flex',alignItems:'center',justifyContent:'center',color:'white',fontFamily:'inherit'}}>+</button>
+        </div>
+      </div>
       <button onClick={handleSubmit} disabled={busy}
         style={{...btnP,width:'100%',padding:'12px',fontSize:'15px',opacity:busy?0.7:1,cursor:busy?'not-allowed':'pointer'}}>
-        {busy?'Placing order…':'Place order'}
+        {busy?`Placing ${repeatCount>1?repeatCount+' orders':'order'}…`:`Place ${repeatCount>1?repeatCount+' orders':'order'}`}
       </button>
+
+      {showMapPicker && (
+        <MapPickerModal
+          initialPin={mapPin}
+          onConfirm={pin=>{setMapPin(pin);setShowMapPicker(false)}}
+          onClose={()=>setShowMapPicker(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+
+// ── Inline Date Picker ────────────────────────────────────────────────────────
+function DatePicker({ value, onChange }) {
+  const [open, setOpen] = useState(false)
+  const [view, setView] = useState(() => {
+    const d = value ? new Date(value + 'T00:00:00') : new Date()
+    return { year: d.getFullYear(), month: d.getMonth() }
+  })
+  const ref = useRef(null)
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return
+    function handler(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const today = todayStr()
+  const { year, month } = view
+  const firstDay = new Date(year, month, 1).getDay()
+  const daysInMonth = new Date(year, month + 1, 0).getDate()
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  const DAYS   = ['Su','Mo','Tu','We','Th','Fr','Sa']
+
+  function selectDay(d) {
+    const mm = String(month + 1).padStart(2, '0')
+    const dd = String(d).padStart(2, '0')
+    onChange(`${year}-${mm}-${dd}`)
+    setOpen(false)
+  }
+
+  function prevMonth() {
+    setView(v => v.month === 0 ? { year: v.year - 1, month: 11 } : { ...v, month: v.month - 1 })
+  }
+  function nextMonth() {
+    setView(v => v.month === 11 ? { year: v.year + 1, month: 0 } : { ...v, month: v.month + 1 })
+  }
+
+  const displayLabel = value ? fmtDate(value) : 'All dates'
+
+  return (
+    <div ref={ref} style={{ position: 'relative' }}>
+      <button onClick={() => setOpen(o => !o)}
+        style={{ padding: '7px 10px', borderRadius: 8, border: `0.5px solid ${value ? 'var(--amb)' : 'var(--border)'}`,
+          background: value ? 'var(--amb-bg)' : 'var(--bg-primary)', color: value ? 'var(--amb-text)' : 'var(--text-primary)',
+          fontSize: '13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6, fontFamily: 'inherit', fontWeight: value ? 500 : 400 }}>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>
+        </svg>
+        {displayLabel}
+        {value && (
+          <span onClick={e => { e.stopPropagation(); onChange('') }}
+            style={{ marginLeft: 2, color: 'var(--text-tertiary)', fontSize: '12px', lineHeight: 1 }}>✕</span>
+        )}
+      </button>
+      {open && (
+        <div style={{ position: 'absolute', top: '100%', left: 0, marginTop: 4, zIndex: 300,
+          background: 'var(--bg-primary)', border: '0.5px solid var(--border)', borderRadius: 12,
+          boxShadow: '0 8px 24px rgba(0,0,0,0.12)', padding: '12px', width: 240 }}>
+          {/* Month nav */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <button onClick={prevMonth} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '16px', padding: '2px 6px' }}>‹</button>
+            <span style={{ fontWeight: 500, fontSize: '13px', color: 'var(--text-primary)' }}>{MONTHS[month]} {year}</span>
+            <button onClick={nextMonth} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-secondary)', fontSize: '16px', padding: '2px 6px' }}>›</button>
+          </div>
+          {/* Day headers */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 2, marginBottom: 4 }}>
+            {DAYS.map(d => <div key={d} style={{ textAlign: 'center', fontSize: '10px', color: 'var(--text-tertiary)', fontWeight: 500, padding: '2px 0' }}>{d}</div>)}
+          </div>
+          {/* Day cells */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 2 }}>
+            {Array.from({ length: firstDay }).map((_, i) => <div key={'e' + i} />)}
+            {Array.from({ length: daysInMonth }, (_, i) => {
+              const d = i + 1
+              const mm = String(month + 1).padStart(2, '0')
+              const dd = String(d).padStart(2, '0')
+              const dateStr = `${year}-${mm}-${dd}`
+              const isSelected = dateStr === value
+              const isToday    = dateStr === today
+              return (
+                <button key={d} onClick={() => selectDay(d)}
+                  style={{ padding: '5px 0', borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: '12px', textAlign: 'center',
+                    background: isSelected ? 'var(--amb)' : isToday ? 'var(--amb-bg)' : 'transparent',
+                    color: isSelected ? 'white' : isToday ? 'var(--amb-text)' : 'var(--text-primary)',
+                    fontWeight: isSelected || isToday ? 500 : 400, fontFamily: 'inherit' }}>
+                  {d}
+                </button>
+              )
+            })}
+          </div>
+          {/* Today shortcut */}
+          <div style={{ borderTop: '0.5px solid var(--border)', marginTop: 8, paddingTop: 8, display: 'flex', gap: 6 }}>
+            <button onClick={() => { onChange(today); setOpen(false) }}
+              style={{ flex: 1, padding: '5px', borderRadius: 6, border: '0.5px solid var(--border-med)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '11px', cursor: 'pointer', fontFamily: 'inherit' }}>Today</button>
+            <button onClick={() => { onChange(''); setOpen(false) }}
+              style={{ flex: 1, padding: '5px', borderRadius: 6, border: '0.5px solid var(--border-med)', background: 'var(--bg-secondary)', color: 'var(--text-secondary)', fontSize: '11px', cursor: 'pointer', fontFamily: 'inherit' }}>All dates</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -534,11 +891,20 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
   const [selected,setSelected]=useState(new Set())
   const [saving,setSaving]=useState(null)
   const [refreshing,setRefreshing]=useState(false)
+  const [viewPinOrder,setViewPinOrder]=useState(null)
 
   async function manualRefresh() {
     setRefreshing(true)
     await onRefresh()
     setRefreshing(false)
+  }
+  async function loadPayLogs() {
+    if(payLogsLoaded) return
+    try {
+      const res = await apiGet({action:'getPaymentRedirects'})
+      setPayLogs(Array.isArray(res)?res:[])
+    } catch {}
+    setPayLogsLoaded(true)
   }
 
   const filtered=orders.filter(o=>{
@@ -587,6 +953,13 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
     setSelected(new Set())
     try{await apiPost('bulkStatus',{ids,status})}catch{}
   }
+  async function bulkPayment(payment){
+    if(!selected.size)return
+    const ids=[...selected]
+    setOrders(p=>p.map(o=>ids.includes(o.id)?{...o,payment}:o))
+    setSelected(new Set())
+    try{await Promise.all(ids.map(id=>apiPost('updateField',{id,field:'payment',value:payment})))}catch{}
+  }
 
   function exportExcel(){
     setExporting(true)
@@ -619,8 +992,8 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
 
       {/* Tabs + Lock + Refresh */}
       <div style={{display:'flex',alignItems:'center',borderBottom:'0.5px solid var(--border)',marginBottom:'1.25rem'}}>
-        {[['orders','Orders'],['settings','Menu & Settings']].map(([k,lbl])=>(
-          <button key={k} onClick={()=>setTab(k)}
+        {[['orders','Orders'],['payments','Payment Redirects'],['settings','Menu & Settings']].map(([k,lbl])=>(
+          <button key={k} onClick={()=>{setTab(k);if(k==='payments')loadPayLogs()}}
             style={{padding:'9px 16px',border:'none',background:'none',cursor:'pointer',fontSize:'14px',fontWeight:tab===k?500:400,color:tab===k?'var(--text-primary)':'var(--text-secondary)',borderBottom:tab===k?`2px solid var(--amb)`:'2px solid transparent',marginBottom:-1,fontFamily:'inherit'}}>
             {lbl}
           </button>
@@ -637,10 +1010,12 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
         </div>
       </div>
 
-      {tab==='orders'?(
+      {tab==='payments'?(
+        <PaymentLogsTab logs={payLogs} loaded={payLogsLoaded} orders={orders} onReload={()=>{setPayLogsLoaded(false);loadPayLogs()}}/>
+      ):tab==='orders'?(
         <>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:'1rem'}}>
-            <input type="date" value={filterDate} onChange={e=>setFilterDate(e.target.value)} style={sel}/>
+            <DatePicker value={filterDate} onChange={setFilterDate}/>
             <select value={filterSlot} onChange={e=>setFilterSlot(e.target.value)} style={sel}>
               <option value="all">All slots</option><option value="slot1">Slot 1</option><option value="slot2">Slot 2</option>
             </select>
@@ -656,6 +1031,9 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
                   {Object.entries(STATUS).map(([k,v])=>(
                     <button key={k} onClick={()=>bulkStatus(k)} style={{padding:'4px 8px',borderRadius:5,border:`0.5px solid ${v.text}`,background:v.bg,color:v.text,cursor:'pointer',fontSize:'11px',fontWeight:500,fontFamily:'inherit'}}>{v.label}</button>
                   ))}
+                  <span style={{width:1,height:16,background:'var(--border)',display:'inline-block'}}/>
+                  <button onClick={()=>bulkPayment('paid')} style={{padding:'4px 8px',borderRadius:5,border:'0.5px solid #6ee7b7',background:'#d1fae5',color:'#065f46',cursor:'pointer',fontSize:'11px',fontWeight:500,fontFamily:'inherit'}}>✓ Mark paid</button>
+                  <button onClick={()=>bulkPayment('pending')} style={{padding:'4px 8px',borderRadius:5,border:'0.5px solid var(--border-med)',background:'var(--bg-secondary)',color:'var(--text-secondary)',cursor:'pointer',fontSize:'11px',fontFamily:'inherit'}}>Mark pending</button>
                 </div>
               )}
               <button onClick={exportExcel} disabled={exporting} style={{...btnS,display:'flex',alignItems:'center',gap:6}}>
@@ -709,13 +1087,14 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
                           </select>
                         </td>
                         <td style={{padding:'10px 12px'}}>
-                          <select value={o.payment||'pending'} onChange={e=>updatePayment(o.id,e.target.value)}
-                            style={{fontSize:'12px',padding:'4px 7px',borderRadius:5,border:'0.5px solid var(--border)',background:o.payment==='paid'?'#d1fae5':'var(--bg-secondary)',color:o.payment==='paid'?'#065f46':'var(--text-secondary)',cursor:'pointer',outline:'none',fontFamily:'inherit',fontWeight:o.payment==='paid'?500:400}}>
-                            <option value="pending">Pending</option><option value="paid">Paid</option>
-                          </select>
+                          <button onClick={()=>updatePayment(o.id,o.payment==='paid'?'pending':'paid')}
+                            style={{padding:'4px 10px',borderRadius:6,border:`0.5px solid ${o.payment==='paid'?'#6ee7b7':'var(--border-med)'}`,background:o.payment==='paid'?'#d1fae5':'var(--bg-secondary)',color:o.payment==='paid'?'#065f46':'var(--text-secondary)',cursor:'pointer',fontSize:'12px',fontWeight:o.payment==='paid'?500:400,fontFamily:'inherit',whiteSpace:'nowrap'}}>
+                            {o.payment==='paid'?'✓ Paid':'Pending'}
+                          </button>
                         </td>
                         <td style={{padding:'10px 12px'}}>
                           <div style={{display:'flex',gap:5}}>
+                            {o.mapPin&&<button onClick={()=>setViewPinOrder(o)} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid var(--amb)',background:'var(--amb-bg)',cursor:'pointer',fontSize:'12px',fontFamily:'inherit',color:'var(--amb-text)'}}>📍 Pin</button>}
                             <button onClick={()=>setEditOrder({...o})} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid var(--border-med)',background:'transparent',cursor:'pointer',fontSize:'12px',fontFamily:'inherit',color:'var(--text-primary)'}}>Edit</button>
                             <button onClick={()=>deleteOrder(o.id)} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid #fca5a5',background:'transparent',cursor:'pointer',fontSize:'12px',color:'#dc2626',fontFamily:'inherit'}}>Del</button>
                           </div>
@@ -735,6 +1114,7 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
         <SettingsTab menu={menu} setMenu={setMenu}/>
       )}
       {editOrder&&<EditModal order={editOrder} menu={menu} onSave={saveEdit} onClose={()=>setEditOrder(null)}/>}
+      {viewPinOrder&&<AdminMapModal pin={viewPinOrder.mapPin} customerName={viewPinOrder.name} onClose={()=>setViewPinOrder(null)}/>}
     </div>
   )
 }
@@ -791,6 +1171,80 @@ function EditModal({order,menu,onSave,onClose}) {
           <button onClick={()=>onSave(form)} style={btnP}>Save changes</button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ── Payment Redirects Tab ────────────────────────────────────────────────────
+function PaymentLogsTab({ logs, loaded, orders, onReload }) {
+  const [filterDate, setFilterDate] = useState(todayStr())
+  const orderMap = Object.fromEntries((orders||[]).map(o=>[o.id,o]))
+
+  const filtered = logs.filter(l => !filterDate || (l.date||l.timestamp||'').startsWith(filterDate))
+    .sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp))
+
+  const redirectCount = {}
+  logs.forEach(l => { redirectCount[l.orderId] = (redirectCount[l.orderId]||0)+1 })
+
+  return (
+    <div>
+      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:'1rem',flexWrap:'wrap'}}>
+        <DatePicker value={filterDate} onChange={setFilterDate}/>
+        <span style={{fontSize:'12px',color:'var(--text-secondary)'}}>{filtered.length} redirect{filtered.length!==1?'s':''}</span>
+        <button onClick={onReload} style={{...btnS,marginLeft:'auto',display:'flex',alignItems:'center',gap:5,fontSize:'12px'}}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+          Reload
+        </button>
+      </div>
+      {!loaded ? (
+        <div style={{textAlign:'center',padding:'3rem',color:'var(--text-secondary)',fontSize:'13px'}}>Loading…</div>
+      ) : filtered.length === 0 ? (
+        <div style={{textAlign:'center',padding:'4rem 2rem',color:'var(--text-secondary)',background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)'}}>No payment redirects for this date</div>
+      ) : (
+        <div style={{background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)',overflow:'hidden'}}>
+          <div style={{overflowX:'auto'}}>
+            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
+              <thead>
+                <tr style={{borderBottom:'0.5px solid var(--border)',background:'var(--bg-secondary)'}}>
+                  {['Time','Order ID','Customer','Phone','Amount','Payment','# Taps'].map(h=>(
+                    <th key={h} style={{padding:'10px 12px',textAlign:'left',fontWeight:500,color:'var(--text-secondary)',whiteSpace:'nowrap',fontSize:'12px'}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((l,i)=>{
+                  const o = orderMap[l.orderId]
+                  const isPaid = o?.payment==='paid'
+                  return (
+                    <tr key={i} style={{borderBottom:i<filtered.length-1?'0.5px solid var(--border)':'none'}}>
+                      <td style={{padding:'10px 12px',whiteSpace:'nowrap',color:'var(--text-secondary)',fontSize:'12px'}}>{fmtTime(l.timestamp)}</td>
+                      <td style={{padding:'10px 12px',fontFamily:'monospace',fontSize:'11px',color:'var(--text-tertiary)'}}>{l.orderId}</td>
+                      <td style={{padding:'10px 12px',color:'var(--text-primary)',fontWeight:500}}>{o?.name||'—'}</td>
+                      <td style={{padding:'10px 12px',color:'var(--text-secondary)',fontSize:'12px'}}>{o?.phone||'—'}</td>
+                      <td style={{padding:'10px 12px',color:'var(--text-primary)'}}>{o?.amount?`₹${o.amount}`:'—'}</td>
+                      <td style={{padding:'10px 12px'}}>
+                        <span style={{fontSize:'11px',padding:'3px 8px',borderRadius:4,background:isPaid?'#d1fae5':'#fef3c7',color:isPaid?'#065f46':'#92400e',fontWeight:500}}>
+                          {isPaid?'✓ Paid':'Pending'}
+                        </span>
+                      </td>
+                      <td style={{padding:'10px 12px',textAlign:'center'}}>
+                        <span style={{fontSize:'12px',fontWeight:500,color:redirectCount[l.orderId]>1?'#e05555':'var(--text-secondary)'}}>
+                          {redirectCount[l.orderId]}{redirectCount[l.orderId]>1&&<span style={{fontSize:'10px',marginLeft:3}}>⚠</span>}
+                        </span>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{padding:'8px 12px',borderTop:'0.5px solid var(--border)',fontSize:'12px',color:'var(--text-secondary)',display:'flex',gap:'1.5rem'}}>
+            <span>{filtered.length} redirect{filtered.length!==1?'s':''}</span>
+            <span>{filtered.filter(l=>orderMap[l.orderId]?.payment==='paid').length} confirmed paid</span>
+            <span style={{color:'#e05555'}}>{Object.values(redirectCount).filter(c=>c>1).length} with multiple taps</span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
