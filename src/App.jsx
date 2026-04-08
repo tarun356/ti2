@@ -160,14 +160,25 @@ function loadMapplsSDK() {
   if (mapplsScriptPromise) return mapplsScriptPromise
   mapplsScriptPromise = new Promise((resolve, reject) => {
     if (window.mappls) { resolve(window.mappls); return }
+    // Inject required Mappls CSS stylesheet
+    if (!document.getElementById('mappls-css')) {
+      const link = document.createElement('link')
+      link.id = 'mappls-css'
+      link.rel = 'stylesheet'
+      link.href = 'https://apis.mappls.com/advancedmaps/api/map_sdk_plugins/v3.0.0/map.css'
+      document.head.appendChild(link)
+    }
     const s = document.createElement('script')
-    s.src = `https://apis.mappls.com/advancedmaps/api/${MAPPLS_KEY}/map_sdk?layer=vector&v=3.0`
+    // v3 SDK: key passed as access_token query param, not in URL path
+    s.src = `https://apis.mappls.com/advancedmaps/api/map_sdk_plugins/v3.0.0/map.js?access_token=${MAPPLS_KEY}&libraries=`
+    s.async = true
     s.onload = () => {
       const wait = setInterval(() => {
         if (window.mappls) { clearInterval(wait); resolve(window.mappls) }
-      }, 100)
+      }, 150)
+      setTimeout(() => { clearInterval(wait); reject(new Error('Mappls SDK timeout')) }, 10000)
     }
-    s.onerror = reject
+    s.onerror = () => reject(new Error('Mappls SDK failed to load'))
     document.head.appendChild(s)
   })
   return mapplsScriptPromise
@@ -312,6 +323,42 @@ function AdminMapModal({ pin, customerName, onClose }) {
   )
 }
 
+// ── UPI QR code rendered on canvas (no external request, no CORS issues) ────
+// Tiny QR encoder using the qrcodegen library loaded from CDN once
+let qrLib = null
+function loadQrLib() {
+  if (qrLib) return Promise.resolve(qrLib)
+  return new Promise((res, rej) => {
+    const s = document.createElement('script')
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'
+    s.onload = () => { qrLib = window.QRCode; res(qrLib) }
+    s.onerror = rej
+    document.head.appendChild(s)
+  })
+}
+function UpiQR({ upiId, upiName, orderId }) {
+  const divRef = useRef(null)
+  const upiLink = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`
+  useEffect(() => {
+    if (!divRef.current) return
+    divRef.current.innerHTML = ''
+    loadQrLib().then(QRCode => {
+      new QRCode(divRef.current, {
+        text: upiLink, width: 140, height: 140,
+        colorDark: '#000000', colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M,
+      })
+    }).catch(() => {
+      if (divRef.current) divRef.current.innerHTML = '<p style="font-size:11px;color:#999;text-align:center">QR unavailable</p>'
+    })
+  }, [upiLink])
+  return (
+    <div style={{display:'flex',justifyContent:'center'}}>
+      <div ref={divRef} style={{borderRadius:8,overflow:'hidden',border:'0.5px solid var(--border)',display:'inline-block'}}/>
+    </div>
+  )
+}
+
 // ── Order Tracker (customer-side, Swiggy-style) ───────────────────────────────
 function OrderTracker({orderId, initialStatus, slot, date, amount, onNewOrder}) {
   const [status, setStatus]   = useState(initialStatus || 'new')
@@ -427,35 +474,42 @@ function OrderTracker({orderId, initialStatus, slot, date, amount, onNewOrder}) 
       {/* ── UPI Payment Panel ── */}
       {!cancelled && UPI_ID && (
         <div style={{background:'var(--bg-primary)',border:`0.5px solid ${payRedirected?'#86efac':'var(--border)'}`,borderRadius:12,padding:'1rem 1.25rem',marginBottom:12}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-            <p style={{fontWeight:500,fontSize:'13px',margin:0,color:'var(--text-primary)'}}>Pay via UPI</p>
-            {payRedirected && <span style={{fontSize:'11px',color:'#059669',fontWeight:500}}>✓ Redirect recorded</span>}
-          </div>
-          {/* QR code via Google Charts — encodes the UPI deep link */}
-          <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-            <img
-              src={`https://chart.googleapis.com/chart?cht=qr&chs=120x120&chl=${encodeURIComponent(`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${amount||''}&tn=TiffinBox+Order+${orderId}&cu=INR`)}`}
-              alt="UPI QR" width={120} height={120}
-              style={{borderRadius:8,border:'0.5px solid var(--border)',flexShrink:0}}
-            />
-            <div style={{flex:1}}>
-              <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:'0 0 8px',lineHeight:1.5}}>
-                Scan with any UPI app, or tap the button below to open your UPI app directly.
-              </p>
-              <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'0 0 10px',fontFamily:'monospace'}}>{UPI_ID}</p>
-              <button
-                onClick={async()=>{
-                  // Record the redirect in the sheet
-                  try { await apiPost('logPaymentRedirect',{orderId, timestamp: new Date().toISOString()}) } catch {}
-                  setPayRedirected(true)
-                  // Open UPI deep link
-                  window.location.href=`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&am=${amount||''}&tn=TiffinBox+Order+${orderId}&cu=INR`
-                }}
-                style={{...btnP,padding:'8px 14px',fontSize:'13px',display:'flex',alignItems:'center',gap:6}}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                Pay ₹{amount||'...'} now
-              </button>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+            <div>
+              <p style={{fontWeight:500,fontSize:'13px',margin:'0 0 2px',color:'var(--text-primary)'}}>Pay via UPI</p>
+              <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:0,fontFamily:'monospace'}}>{UPI_ID}</p>
             </div>
+            {payRedirected && <span style={{fontSize:'11px',color:'#059669',fontWeight:500}}>✓ Recorded</span>}
+          </div>
+          {/* QR — rendered on a canvas using a tiny inline QR library so no external image request */}
+          <UpiQR upiId={UPI_ID} upiName={UPI_NAME} orderId={orderId}/>
+          <p style={{fontSize:'11px',color:'var(--text-secondary)',margin:'10px 0 10px',textAlign:'center'}}>
+            Scan above, or open your UPI app directly:
+          </p>
+          {/* Per-app deep link buttons — no amount so customer types it in their app */}
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+            {[
+              {name:'Google Pay',  color:'#4285F4', scheme:`gpay://upi/pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,      fallback:`tez://upi/pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`},
+              {name:'PhonePe',     color:'#5F259F', scheme:`phonepe://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,        fallback:null},
+              {name:'Paytm',       color:'#00BAF2', scheme:`paytmmp://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,        fallback:`paytm://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`},
+              {name:'BHIM / Other',color:'#FF6600', scheme:`upi://pay?pa=${UPI_ID}&pn=${encodeURIComponent(UPI_NAME)}&tn=TiffinBox+${orderId}&cu=INR`,            fallback:null},
+            ].map(app=>(
+              <button key={app.name}
+                onClick={async()=>{
+                  try { await apiPost('logPaymentRedirect',{orderId, timestamp:new Date().toISOString(), app:app.name}) } catch {}
+                  setPayRedirected(true)
+                  window.location.href = app.scheme
+                  // Fallback after 1.5s if app not installed
+                  if(app.fallback) setTimeout(()=>{ window.location.href=app.fallback },1500)
+                }}
+                style={{padding:'10px 8px',borderRadius:8,border:`1.5px solid ${app.color}22`,
+                  background:`${app.color}11`,cursor:'pointer',fontFamily:'inherit',
+                  display:'flex',alignItems:'center',justifyContent:'center',gap:6,
+                  fontSize:'12px',fontWeight:500,color:app.color}}>
+                <span style={{width:8,height:8,borderRadius:'50%',background:app.color,flexShrink:0}}/>
+                {app.name}
+              </button>
+            ))}
           </div>
         </div>
       )}
@@ -879,6 +933,30 @@ function DatePicker({ value, onChange }) {
   )
 }
 
+// ── Group repeat orders (same customer+items+slot+date within 60s) ───────────
+function groupOrders(orders) {
+  const groups = []
+  const used = new Set()
+  for (let i = 0; i < orders.length; i++) {
+    if (used.has(orders[i].id)) continue
+    const base = orders[i]
+    const baseItems = JSON.stringify(base.items)
+    const matches = [base]
+    for (let j = i + 1; j < orders.length; j++) {
+      if (used.has(orders[j].id)) continue
+      const o = orders[j]
+      const sameCustomer = o.name === base.name && o.phone === base.phone
+      const sameItems    = JSON.stringify(o.items) === baseItems
+      const sameSlot     = o.slot === base.slot && o.date === base.date
+      const within60s    = Math.abs(new Date(o.createdAt) - new Date(base.createdAt)) < 60000
+      if (sameCustomer && sameItems && sameSlot && within60s) { matches.push(o); used.add(o.id) }
+    }
+    used.add(base.id)
+    groups.push({ ...base, _count: matches.length, _ids: matches.map(m => m.id) })
+  }
+  return groups
+}
+
 // ── Admin View ────────────────────────────────────────────────────────────────
 function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
   const [tab,setTab]=useState('orders')
@@ -892,6 +970,8 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
   const [saving,setSaving]=useState(null)
   const [refreshing,setRefreshing]=useState(false)
   const [viewPinOrder,setViewPinOrder]=useState(null)
+  const [payLogs,setPayLogs]=useState([])
+  const [payLogsLoaded,setPayLogsLoaded]=useState(false)
 
   async function manualRefresh() {
     setRefreshing(true)
@@ -1058,7 +1138,7 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
                     </tr>
                   </thead>
                   <tbody>
-                    {filtered.map((o,i)=>(
+                    {groupOrders(filtered).map((o,i)=>(
                       <tr key={o.id} style={{borderBottom:i<filtered.length-1?'0.5px solid var(--border)':'none',background:selected.has(o.id)?'var(--amb-bg)':'transparent',opacity:saving===o.id?0.6:1,transition:'opacity 0.15s'}}>
                         <td style={{padding:'10px 12px'}}><input type="checkbox" checked={selected.has(o.id)} onChange={()=>setSelected(s=>{const n=new Set(s);n.has(o.id)?n.delete(o.id):n.add(o.id);return n})} style={{cursor:'pointer'}}/></td>
                         <td style={{padding:'10px 12px',whiteSpace:'nowrap'}}>
@@ -1079,6 +1159,7 @@ function AdminView({orders,menu,setOrders,setMenu,onLock,onRefresh}) {
                             <div key={item} style={{whiteSpace:'nowrap',fontSize:'12px',color:'var(--text-primary)'}}>{item} <span style={{color:'var(--text-secondary)'}}>×{qty}</span></div>
                           ))}
                           {o.notes&&<div style={{color:'var(--text-tertiary)',fontStyle:'italic',fontSize:'11px',marginTop:2}}>{o.notes}</div>}
+                          {o._count>1&&<div style={{marginTop:4,display:'inline-flex',alignItems:'center',gap:4,background:'var(--amb-bg)',color:'var(--amb-text)',fontSize:'10px',fontWeight:600,padding:'2px 6px',borderRadius:4}}>×{o._count} orders</div>}
                         </td>
                         <td style={{padding:'10px 12px'}}>
                           <select value={o.status} onChange={e=>updateStatus(o.id,e.target.value)}
@@ -1206,7 +1287,7 @@ function PaymentLogsTab({ logs, loaded, orders, onReload }) {
             <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
               <thead>
                 <tr style={{borderBottom:'0.5px solid var(--border)',background:'var(--bg-secondary)'}}>
-                  {['Time','Order ID','Customer','Phone','Amount','Payment','# Taps'].map(h=>(
+                  {['Time','Order ID','Customer','Phone','Amount','App','Payment','# Taps'].map(h=>(
                     <th key={h} style={{padding:'10px 12px',textAlign:'left',fontWeight:500,color:'var(--text-secondary)',whiteSpace:'nowrap',fontSize:'12px'}}>{h}</th>
                   ))}
                 </tr>
@@ -1222,6 +1303,7 @@ function PaymentLogsTab({ logs, loaded, orders, onReload }) {
                       <td style={{padding:'10px 12px',color:'var(--text-primary)',fontWeight:500}}>{o?.name||'—'}</td>
                       <td style={{padding:'10px 12px',color:'var(--text-secondary)',fontSize:'12px'}}>{o?.phone||'—'}</td>
                       <td style={{padding:'10px 12px',color:'var(--text-primary)'}}>{o?.amount?`₹${o.amount}`:'—'}</td>
+                      <td style={{padding:'10px 12px',fontSize:'11px',color:'var(--text-secondary)'}}>{l.app||'—'}</td>
                       <td style={{padding:'10px 12px'}}>
                         <span style={{fontSize:'11px',padding:'3px 8px',borderRadius:4,background:isPaid?'#d1fae5':'#fef3c7',color:isPaid?'#065f46':'#92400e',fontWeight:500}}>
                           {isPaid?'✓ Paid':'Pending'}
