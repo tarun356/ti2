@@ -190,75 +190,83 @@ function SetupScreen() {
   )
 }
 
-// ── Mappls map SDK loader ─────────────────────────────────────────────────────
-// Official URL as of Aug 2025: https://github.com/mappls-api/mappls-web-maps-js
-let mapplsScriptPromise = null
-function loadMapplsSDK() {
-  if (mapplsScriptPromise) return mapplsScriptPromise
-  mapplsScriptPromise = new Promise((resolve, reject) => {
-    if (window.mappls) { resolve(window.mappls); return }
+// ── Leaflet map loader (no API key needed, works everywhere) ─────────────────
+let leafletPromise = null
+function loadLeaflet() {
+  if (leafletPromise) return leafletPromise
+  leafletPromise = new Promise((resolve, reject) => {
+    if (window.L) { resolve(window.L); return }
+    // CSS first
+    if (!document.getElementById('leaflet-css')) {
+      const link = document.createElement('link')
+      link.id   = 'leaflet-css'
+      link.rel  = 'stylesheet'
+      link.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'
+      document.head.appendChild(link)
+    }
     const s = document.createElement('script')
-    // New SDK URL — key is access_token query param, bundled CSS included
-    s.src = `https://sdk.mappls.com/map/sdk/web?v=3.0&access_token=${MAPPLS_KEY}`
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'
     s.async = true
     s.onload = () => {
-      const wait = setInterval(() => {
-        if (window.mappls) { clearInterval(wait); resolve(window.mappls) }
-      }, 100)
-      // Timeout after 12s and reset so retry works
-      setTimeout(() => { clearInterval(wait); mapplsScriptPromise = null; reject(new Error('timeout')) }, 12000)
+      if (window.L) resolve(window.L)
+      else reject(new Error('Leaflet did not attach'))
     }
-    s.onerror = () => { mapplsScriptPromise = null; reject(new Error('load failed')) }
+    s.onerror = () => { leafletPromise = null; reject(new Error('Script load failed')) }
     document.head.appendChild(s)
   })
-  return mapplsScriptPromise
+  return leafletPromise
 }
 
 // ── Customer: Map Pin Picker Modal ────────────────────────────────────────────
 function MapPickerModal({ initialPin, onConfirm, onClose }) {
-  const mapRef    = useRef(null)
-  const markerRef = useRef(null)
+  const mapRef    = useRef(null)   // DOM div
+  const leafMap   = useRef(null)   // L.map instance
+  const markerRef = useRef(null)   // L.marker instance
   const [pin, setPin]         = useState(initialPin || null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
 
-  const mapDivId = useRef('mappls-picker-' + Math.random().toString(36).slice(2))
-
   useEffect(() => {
     let cancelled = false
-    if (!MAPPLS_KEY) { setError('Mappls key not configured.'); setLoading(false); return }
-    loadMapplsSDK().then(mappls => {
-      if (cancelled) return
-      const defaultCenter = initialPin
-        ? { lat: initialPin.lat, lng: initialPin.lng }
-        : { lat: 28.6139, lng: 77.2090 }
-      // Pass div ID string — new SDK requires this, not a DOM element
-      const map = new mappls.Map(mapDivId.current, {
-        center: defaultCenter, zoom: initialPin ? 16 : 12,
+    loadLeaflet().then(L => {
+      if (cancelled || !mapRef.current) return
+      // Default to Jaipur if no initial pin
+      const startLat = initialPin?.lat ?? 26.9124
+      const startLng = initialPin?.lng ?? 75.7873
+      const map = L.map(mapRef.current, { zoomControl: true }).setView([startLat, startLng], initialPin ? 16 : 13)
+      leafMap.current = map
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors', maxZoom: 19,
+      }).addTo(map)
+      // Custom amber pin icon using SVG — matches your app accent colour
+      const icon = L.divIcon({
+        className: '',
+        html: `<svg width="28" height="38" viewBox="0 0 28 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M14 0C6.27 0 0 6.27 0 14c0 10.5 14 24 14 24s14-13.5 14-24C28 6.27 21.73 0 14 0z" fill="var(--amb,#BA7517)"/>
+          <circle cx="14" cy="14" r="6" fill="white"/>
+        </svg>`,
+        iconSize: [28, 38], iconAnchor: [14, 38], popupAnchor: [0, -38],
       })
-      map.on('load', () => {
-        if (cancelled) return
-        setLoading(false)
-        const startLat = initialPin ? initialPin.lat : 28.6139
-        const startLng = initialPin ? initialPin.lng : 77.2090
-        const marker = new mappls.Marker({ map, position: { lat: startLat, lng: startLng }, draggable: true })
-        markerRef.current = marker
-        if (initialPin) setPin(initialPin)
-        marker.on('dragend', () => {
-          const pos = marker.getPosition()
-          setPin({ lat: pos.lat, lng: pos.lng })
-        })
-        map.on('click', e => {
-          // New SDK uses e.lngLat.lat / e.lngLat.lng
-          const lat = e?.lngLat?.lat ?? e?.lat
-          const lng = e?.lngLat?.lng ?? e?.lng
-          if (lat == null || lng == null) return
-          marker.setPosition({ lat, lng })
-          setPin({ lat, lng })
-        })
+      const marker = L.marker([startLat, startLng], { icon, draggable: true }).addTo(map)
+      markerRef.current = marker
+      setLoading(false)
+      if (initialPin) setPin(initialPin)
+
+      marker.on('dragend', () => {
+        const { lat, lng } = marker.getLatLng()
+        setPin({ lat, lng })
       })
-    }).catch(err => { setError('Could not load map — check your Mappls key in Vercel env vars. (' + err.message + ')'); setLoading(false) })
-    return () => { cancelled = true }
+      map.on('click', e => {
+        const { lat, lng } = e.latlng
+        marker.setLatLng([lat, lng])
+        setPin({ lat, lng })
+      })
+    }).catch(err => { if (!cancelled) { setError('Map failed to load: ' + err.message); setLoading(false) } })
+
+    return () => {
+      cancelled = true
+      if (leafMap.current) { leafMap.current.remove(); leafMap.current = null }
+    }
   }, [])
 
   return (
@@ -282,7 +290,7 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
               <p style={{fontSize:'13px',color:'#e05555',textAlign:'center',padding:'1rem'}}>{error}</p>
             </div>
           )}
-          <div id={mapDivId.current} style={{width:'100%',height:'100%'}}/>
+          <div ref={mapRef} style={{width:'100%',height:'100%'}}/>
         </div>
         <div style={{padding:'0.875rem 1.25rem',borderTop:'0.5px solid var(--border)',display:'flex',alignItems:'center',justifyContent:'space-between',gap:10}}>
           <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:0,flex:1}}>
@@ -305,24 +313,36 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
 
 // ── Admin: View Pin Modal ─────────────────────────────────────────────────────
 function AdminMapModal({ pin, customerName, onClose }) {
+  const mapRef = useRef(null)
+  const leafMap = useRef(null)
   const [loading, setLoading] = useState(true)
-  const [error, setError]   = useState(null)
-
-  const mapDivId = useRef('mappls-admin-' + Math.random().toString(36).slice(2))
+  const [error, setError]     = useState(null)
 
   useEffect(() => {
     let cancelled = false
-    if (!MAPPLS_KEY) { setError('Mappls key not configured.'); setLoading(false); return }
-    loadMapplsSDK().then(mappls => {
-      if (cancelled) return
-      const map = new mappls.Map(mapDivId.current, { center: { lat: pin.lat, lng: pin.lng }, zoom: 16 })
-      map.on('load', () => {
-        if (cancelled) return
-        setLoading(false)
-        new mappls.Marker({ map, position: { lat: pin.lat, lng: pin.lng } })
+    loadLeaflet().then(L => {
+      if (cancelled || !mapRef.current) return
+      const map = L.map(mapRef.current).setView([pin.lat, pin.lng], 16)
+      leafMap.current = map
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors', maxZoom: 19,
+      }).addTo(map)
+      const icon = L.divIcon({
+        className: '',
+        html: `<svg width="28" height="38" viewBox="0 0 28 38" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M14 0C6.27 0 0 6.27 0 14c0 10.5 14 24 14 24s14-13.5 14-24C28 6.27 21.73 0 14 0z" fill="var(--amb,#BA7517)"/>
+          <circle cx="14" cy="14" r="6" fill="white"/>
+        </svg>`,
+        iconSize: [28, 38], iconAnchor: [14, 38],
       })
-    }).catch(err => { setError('Could not load map. (' + err.message + ')'); setLoading(false) })
-    return () => { cancelled = true }
+      L.marker([pin.lat, pin.lng], { icon }).addTo(map)
+      setLoading(false)
+    }).catch(err => { if (!cancelled) { setError('Map failed to load: ' + err.message); setLoading(false) } })
+
+    return () => {
+      cancelled = true
+      if (leafMap.current) { leafMap.current.remove(); leafMap.current = null }
+    }
   }, [])
 
   return (
@@ -346,7 +366,7 @@ function AdminMapModal({ pin, customerName, onClose }) {
               <p style={{fontSize:'13px',color:'#e05555',padding:'1rem',textAlign:'center'}}>{error}</p>
             </div>
           )}
-          <div id={mapDivId.current} style={{width:'100%',height:'100%'}}/>
+          <div ref={mapRef} style={{width:'100%',height:'100%'}}/>
         </div>
         <div style={{padding:'0.875rem 1.25rem',borderTop:'0.5px solid var(--border)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
           <a href={`https://maps.google.com/?q=${pin.lat},${pin.lng}`} target="_blank" rel="noopener noreferrer"
