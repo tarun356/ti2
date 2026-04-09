@@ -20,7 +20,6 @@ const CONFIG_DEFAULTS = {
   upiName:       import.meta.env.VITE_UPI_NAME  || 'TiffinBox',
   waNumber:      import.meta.env.VITE_WA_NUMBER || '',
 }
-// Convenience helper used throughout the app
 function slotLabels(cfg) {
   const n = parseInt(cfg.slotCount) || 2
   const out = { slot1: cfg.slot1Label }
@@ -28,6 +27,23 @@ function slotLabels(cfg) {
   if (n >= 3) out.slot3 = cfg.slot3Label
   return out
 }
+function applyConfigColors(cfg) {
+  function hexToRgb(hex) {
+    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16)
+    return `${r},${g},${b}`
+  }
+  const root = document.documentElement
+  const light = cfg.accentColor || '#BA7517'
+  const dark  = cfg.accentDark  || '#e09a2b'
+  const rgb   = hexToRgb(light)
+  root.style.setProperty('--amb',      light)
+  root.style.setProperty('--amb-bg',   `rgba(${rgb},0.12)`)
+  root.style.setProperty('--amb-dark', light)
+  root.style.setProperty('--amb-text', light)
+  root.style.setProperty('--amb-configured', dark)
+}
+
+const SLOT_LABELS = { slot1: 'Slot 1 — Morning', slot2: 'Slot 2 — Afternoon' }
 const STATUS = {
   new:        { label: 'New',              text: '#3B6D11', bg: '#EAF3DE' },
   confirmed:  { label: 'Confirmed',        text: '#185FA5', bg: '#E6F1FB' },
@@ -72,26 +88,12 @@ const CSS = `
   @keyframes tbox-slide-in { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
 `
 
-function applyConfigColors(cfg) {
-  // Convert hex to r,g,b for rgba usage
-  function hexToRgb(hex) {
-    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16)
-    return `${r},${g},${b}`
-  }
-  const root = document.documentElement
-  const light = cfg.accentColor || '#BA7517'
-  const dark  = cfg.accentDark  || '#e09a2b'
-  const rgb   = hexToRgb(light)
-  root.style.setProperty('--amb',      light)
-  root.style.setProperty('--amb-bg',   `rgba(${rgb},0.12)`)
-  root.style.setProperty('--amb-dark', light)
-  root.style.setProperty('--amb-text', light)
-  // Dark mode overrides stored as data attributes so media query wins,
-  // but we also set a custom property the dark media query won't override:
-  root.style.setProperty('--amb-configured', dark)
+function genId() {
+  const chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789' // no 0/O/1/I to avoid confusion
+  let id=''
+  for(let i=0;i<4;i++) id+=chars[Math.floor(Math.random()*chars.length)]
+  return id
 }
-
-function genId() { return Date.now().toString(36)+Math.random().toString(36).slice(2,6) }
 function todayStr() { return new Date().toISOString().split('T')[0] }
 function fmtDate(d) {
   try { return new Date(d+'T00:00:00').toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) }
@@ -190,27 +192,22 @@ function SetupScreen() {
   )
 }
 
-// ── Leaflet map loader (no API key needed, works everywhere) ─────────────────
+// ── Leaflet map loader (free, no API key needed) ─────────────────────────────
 let leafletPromise = null
 function loadLeaflet() {
   if (leafletPromise) return leafletPromise
   leafletPromise = new Promise((resolve, reject) => {
     if (window.L) { resolve(window.L); return }
-    // CSS first
     if (!document.getElementById('leaflet-css')) {
       const link = document.createElement('link')
-      link.id   = 'leaflet-css'
-      link.rel  = 'stylesheet'
+      link.id = 'leaflet-css'; link.rel = 'stylesheet'
       link.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css'
       document.head.appendChild(link)
     }
     const s = document.createElement('script')
     s.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'
     s.async = true
-    s.onload = () => {
-      if (window.L) resolve(window.L)
-      else reject(new Error('Leaflet did not attach'))
-    }
+    s.onload = () => { if (window.L) resolve(window.L); else reject(new Error('Leaflet did not attach')) }
     s.onerror = () => { leafletPromise = null; reject(new Error('Script load failed')) }
     document.head.appendChild(s)
   })
@@ -219,9 +216,9 @@ function loadLeaflet() {
 
 // ── Customer: Map Pin Picker Modal ────────────────────────────────────────────
 function MapPickerModal({ initialPin, onConfirm, onClose }) {
-  const mapRef    = useRef(null)   // DOM div
-  const leafMap   = useRef(null)   // L.map instance
-  const markerRef = useRef(null)   // L.marker instance
+  const mapRef    = useRef(null)
+  const leafMap   = useRef(null)
+  const markerRef = useRef(null)
   const [pin, setPin]         = useState(initialPin || null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
@@ -230,7 +227,6 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
     let cancelled = false
     loadLeaflet().then(L => {
       if (cancelled || !mapRef.current) return
-      // Default to Jaipur if no initial pin
       const startLat = initialPin?.lat ?? 26.9124
       const startLng = initialPin?.lng ?? 75.7873
       const map = L.map(mapRef.current, { zoomControl: true }).setView([startLat, startLng], initialPin ? 16 : 13)
@@ -238,7 +234,6 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors', maxZoom: 19,
       }).addTo(map)
-      // Custom amber pin icon using SVG — matches your app accent colour
       const icon = L.divIcon({
         className: '',
         html: `<svg width="28" height="38" viewBox="0 0 28 38" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -251,7 +246,6 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
       markerRef.current = marker
       setLoading(false)
       if (initialPin) setPin(initialPin)
-
       marker.on('dragend', () => {
         const { lat, lng } = marker.getLatLng()
         setPin({ lat, lng })
@@ -262,7 +256,6 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
         setPin({ lat, lng })
       })
     }).catch(err => { if (!cancelled) { setError('Map failed to load: ' + err.message); setLoading(false) } })
-
     return () => {
       cancelled = true
       if (leafMap.current) { leafMap.current.remove(); leafMap.current = null }
@@ -313,7 +306,7 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
 
 // ── Admin: View Pin Modal ─────────────────────────────────────────────────────
 function AdminMapModal({ pin, customerName, onClose }) {
-  const mapRef = useRef(null)
+  const mapRef  = useRef(null)
   const leafMap = useRef(null)
   const [loading, setLoading] = useState(true)
   const [error, setError]     = useState(null)
@@ -338,7 +331,6 @@ function AdminMapModal({ pin, customerName, onClose }) {
       L.marker([pin.lat, pin.lng], { icon }).addTo(map)
       setLoading(false)
     }).catch(err => { if (!cancelled) { setError('Map failed to load: ' + err.message); setLoading(false) } })
-
     return () => {
       cancelled = true
       if (leafMap.current) { leafMap.current.remove(); leafMap.current = null }
@@ -381,11 +373,247 @@ function AdminMapModal({ pin, customerName, onClose }) {
   )
 }
 
+
+// ── UPI QR: renders via qrcodejs then converts canvas→img so screenshots work ──
+let qrLib = null
+function loadQrLib() {
+  if (qrLib) return Promise.resolve(qrLib)
+  return new Promise((res, rej) => {
+    const s = document.createElement('script')
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js'
+    s.onload = () => { qrLib = window.QRCode; res(qrLib) }
+    s.onerror = rej
+    document.head.appendChild(s)
+  })
+}
+function UpiQR({ upiId, upiName, orderId, size = 220 }) {
+  const [imgSrc, setImgSrc] = useState(null)
+  const [err, setErr]       = useState(false)
+  const upiLink = `upi://pay?pa=${upiId}&pn=${encodeURIComponent(upiName)}&tn=TiffinBox+${orderId}&cu=INR`
+
+  useEffect(() => {
+    setImgSrc(null); setErr(false)
+    const container = document.createElement('div')
+    loadQrLib().then(QRCode => {
+      new QRCode(container, {
+        text: upiLink, width: size, height: size,
+        colorDark: '#000000', colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M,
+      })
+      // qrcodejs appends a canvas; wait one tick then extract as data URL
+      setTimeout(() => {
+        const canvas = container.querySelector('canvas')
+        if (canvas) { setImgSrc(canvas.toDataURL('image/png')) }
+        else {
+          const img = container.querySelector('img')
+          if (img) setImgSrc(img.src)
+          else setErr(true)
+        }
+      }, 100)
+    }).catch(() => setErr(true))
+  }, [upiLink, size])
+
+  if (err) return <p style={{fontSize:'11px',color:'#999',textAlign:'center'}}>QR unavailable</p>
+  if (!imgSrc) return (
+    <div style={{width:size,height:size,display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto'}}>
+      <div style={{width:24,height:24,border:'3px solid #eee',borderTopColor:'#aaa',borderRadius:'50%',animation:'spin 0.7s linear infinite'}}/>
+    </div>
+  )
+  return (
+    <img src={imgSrc} width={size} height={size} alt="UPI QR code"
+      style={{display:'block',margin:'0 auto',imageRendering:'pixelated',borderRadius:4}}/>
+  )
+}
+
+// ── UPI QR Modal — fullscreen, screenshot-friendly, record payment ────────────
+function UpiQrModal({ upiId, upiName, orderId, onClose, onRecorded }) {
+  const [recorded, setRecorded] = useState(false)
+  const [copied,   setCopied]   = useState(false)
+
+  // Generic UPI intent — OS shows installed UPI app picker, no pre-filled details
+  function openUpiPicker() {
+    const a = document.createElement('a')
+    a.href = 'upi://pay'
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    document.body.appendChild(a); a.click(); document.body.removeChild(a)
+  }
+
+  function copyId() {
+    const done = () => { setCopied(true); setTimeout(() => setCopied(false), 2000) }
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(upiId).then(done).catch(fb)
+    } else { fb() }
+    function fb() {
+      const ta = document.createElement('textarea')
+      ta.value = upiId; ta.style.cssText = 'position:fixed;opacity:0'
+      document.body.appendChild(ta); ta.focus(); ta.select()
+      try { document.execCommand('copy'); done() } catch {}
+      document.body.removeChild(ta)
+    }
+  }
+
+  async function handleRecord() {
+    setRecorded(true)
+    try { await apiPost('updateField', { id: orderId, field: 'payment', value: 'paid' }) } catch {}
+    onRecorded()
+  }
+
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.75)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',zIndex:3000,padding:'1rem',overflowY:'auto'}}
+      onClick={e=>{ if(e.target===e.currentTarget) onClose() }}>
+      <div style={{background:'#ffffff',borderRadius:20,padding:'1.5rem',width:'100%',maxWidth:340,textAlign:'center',boxShadow:'0 24px 60px rgba(0,0,0,0.4)'}}>
+
+        {/* Header */}
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'1.25rem'}}>
+          <p style={{fontWeight:600,fontSize:'15px',margin:0,color:'#111'}}>Pay via UPI</p>
+          <button onClick={onClose} style={{background:'#f3f4f6',border:'none',cursor:'pointer',borderRadius:'50%',width:30,height:30,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'16px',color:'#555',lineHeight:1}}>×</button>
+        </div>
+
+        {/* Copy UPI ID + Open app — single row */}
+        <div style={{display:'flex',gap:8,marginBottom:'1rem'}}>
+          {/* UPI ID pill */}
+          <div style={{flex:1,background:'#f9fafb',border:'1px solid #e5e7eb',borderRadius:10,padding:'9px 12px',display:'flex',alignItems:'center',minWidth:0}}>
+            <span style={{fontFamily:'monospace',fontSize:'12px',color:'#374151',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{upiId}</span>
+          </div>
+          {/* Copy button */}
+          <button onClick={copyId}
+            style={{flexShrink:0,padding:'9px 14px',borderRadius:10,border:`1px solid ${copied?'#6ee7b7':'#e5e7eb'}`,
+              background:copied?'#d1fae5':'#f9fafb',color:copied?'#065f46':'#6b7280',
+              cursor:'pointer',fontSize:'12px',fontWeight:500,fontFamily:'inherit',
+              display:'flex',alignItems:'center',gap:5,transition:'all 0.2s'}}>
+            {copied
+              ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>Copied</>
+              : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</>
+            }
+          </button>
+        </div>
+
+        {/* Open UPI app button — generic picker, no pre-filled details */}
+        <button onClick={openUpiPicker}
+          style={{width:'100%',padding:'11px',borderRadius:10,border:'1.5px solid #6366f133',
+            background:'#6366f10f',color:'#4f46e5',fontWeight:600,fontSize:'13px',
+            cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8,
+            marginBottom:'1rem'}}>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z" fill="currentColor" opacity="0.15"/>
+            <path d="M8 12h8M12 8l4 4-4 4"/>
+          </svg>
+          Open UPI App
+        </button>
+
+        {/* Divider */}
+        <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:'1rem'}}>
+          <div style={{flex:1,height:'0.5px',background:'#e5e7eb'}}/>
+          <span style={{fontSize:'11px',color:'#aaa',fontWeight:500}}>or scan QR</span>
+          <div style={{flex:1,height:'0.5px',background:'#e5e7eb'}}/>
+        </div>
+
+        {/* QR — pure white, renders as <img> so screenshots capture it */}
+        <div style={{background:'#ffffff',padding:12,borderRadius:12,border:'1px solid #e5e7eb',marginBottom:'1rem',display:'inline-block'}}>
+          <UpiQR upiId={upiId} upiName={upiName} orderId={orderId} size={220}/>
+        </div>
+
+        {/* Record payment */}
+        {recorded ? (
+          <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:7,padding:'10px',borderRadius:10,background:'#d1fae5',color:'#065f46',fontWeight:500,fontSize:'13px'}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>
+            Payment recorded
+          </div>
+        ) : (
+          <button onClick={handleRecord}
+            style={{width:'100%',padding:'11px',borderRadius:10,border:'none',background:'#16a34a',color:'white',fontWeight:500,fontSize:'14px',cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>
+            Mark as paid
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+// ── UPI Pay Panel: copy UPI ID + open QR modal ───────────────────────────────
+function UpiPayPanel({ upiId, upiName, orderId }) {
+  const [copied, setCopied] = useState(false)
+  const [showQr, setShowQr] = useState(false)
+  const [paid,   setPaid]   = useState(false)
+
+  function copyUpiId() {
+    const doCopy = () => { setCopied(true); setTimeout(() => setCopied(false), 2000) }
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(upiId).then(doCopy).catch(fallbackCopy)
+    } else { fallbackCopy() }
+    function fallbackCopy() {
+      const ta = document.createElement('textarea')
+      ta.value = upiId
+      ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0'
+      document.body.appendChild(ta); ta.focus(); ta.select()
+      try { document.execCommand('copy'); doCopy() } catch {}
+      document.body.removeChild(ta)
+    }
+  }
+
+  return (
+    <>
+      <div style={{background:'var(--bg-primary)',border:`0.5px solid ${paid?'#6ee7b7':'var(--border)'}`,borderRadius:12,padding:'1rem 1.25rem',marginBottom:12,transition:'border-color 0.3s'}}>
+        <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
+          <p style={{fontWeight:500,fontSize:'13px',margin:0,color:'var(--text-primary)'}}>Pay via UPI</p>
+          {paid && (
+            <span style={{fontSize:'11px',padding:'3px 8px',borderRadius:4,background:'#d1fae5',color:'#065f46',fontWeight:500,display:'flex',alignItems:'center',gap:4}}>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>
+              Paid
+            </span>
+          )}
+        </div>
+
+        {/* UPI ID + copy */}
+        <div style={{display:'flex',alignItems:'center',gap:8,background:'var(--bg-secondary)',borderRadius:8,padding:'9px 12px',marginBottom:10}}>
+          <span style={{fontFamily:'monospace',fontSize:'13px',color:'var(--text-primary)',flex:1,wordBreak:'break-all'}}>{upiId}</span>
+          <button onClick={copyUpiId}
+            style={{flexShrink:0,padding:'5px 12px',borderRadius:6,
+              border:`0.5px solid ${copied?'#6ee7b7':'var(--border-med)'}`,
+              background:copied?'#d1fae5':'var(--bg-primary)',
+              color:copied?'#065f46':'var(--text-secondary)',
+              cursor:'pointer',fontSize:'12px',fontWeight:500,fontFamily:'inherit',
+              display:'flex',alignItems:'center',gap:5,transition:'all 0.2s'}}>
+            {copied
+              ? <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 13l4 4L19 7"/></svg>Copied!</>
+              : <><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/></svg>Copy</>
+            }
+          </button>
+        </div>
+
+        <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'0 0 10px',lineHeight:1.6}}>
+          Open any UPI app, tap <strong style={{color:'var(--text-secondary)'}}>Pay by UPI ID</strong>, paste above — or tap the button to scan the QR.
+        </p>
+
+        <button onClick={()=>setShowQr(true)}
+          style={{width:'100%',padding:'10px',borderRadius:8,border:'none',
+            background:'var(--amb)',color:'white',
+            cursor:'pointer',fontSize:'13px',fontWeight:500,fontFamily:'inherit',
+            display:'flex',alignItems:'center',justifyContent:'center',gap:7}}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+            <path d="M14 14h.01M14 17h.01M17 14h.01M17 17h3M20 14v.01"/>
+          </svg>
+          Show QR &amp; Record Payment
+        </button>
+      </div>
+
+      {showQr && (
+        <UpiQrModal
+          upiId={upiId} upiName={upiName} orderId={orderId}
+          onClose={()=>setShowQr(false)}
+          onRecorded={()=>{ setPaid(true); setTimeout(()=>setShowQr(false), 1200) }}
+        />
+      )}
+    </>
+  )
+}
+
 // ── Order Tracker (customer-side, Swiggy-style) ───────────────────────────────
 function OrderTracker({orderId, initialStatus, slot, date, amount, config=CONFIG_DEFAULTS, onNewOrder}) {
   const [status, setStatus]   = useState(initialStatus || 'new')
   const [lastPoll, setLastPoll] = useState(null)
-  const [payRedirected, setPayRedirected] = useState(false)
   const cancelled = status === 'cancelled'
   const delivered = status === 'delivered'
   const done      = cancelled || delivered
@@ -494,39 +722,8 @@ function OrderTracker({orderId, initialStatus, slot, date, amount, config=CONFIG
       )}
 
       {/* ── UPI Payment Panel ── */}
-      {!cancelled && config.upiId && (
-        <div style={{background:'var(--bg-primary)',border:`0.5px solid ${payRedirected?'#86efac':'var(--border)'}`,borderRadius:12,padding:'1rem 1.25rem',marginBottom:12}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}}>
-            <p style={{fontWeight:500,fontSize:'13px',margin:0,color:'var(--text-primary)'}}>Pay via UPI</p>
-            {payRedirected && <span style={{fontSize:'11px',color:'#059669',fontWeight:500}}>✓ Redirect recorded</span>}
-          </div>
-          {/* QR code via Google Charts — encodes the UPI deep link */}
-          <div style={{display:'flex',gap:14,alignItems:'flex-start'}}>
-            <img
-              src={`https://chart.googleapis.com/chart?cht=qr&chs=120x120&chl=${encodeURIComponent(`upi://pay?pa=${config.upiId}&pn=${encodeURIComponent(config.upiName)}&tn=${encodeURIComponent(config.businessName)}+Order+${orderId}&cu=INR`)}`}
-              alt="UPI QR" width={120} height={120}
-              style={{borderRadius:8,border:'0.5px solid var(--border)',flexShrink:0}}
-            />
-            <div style={{flex:1}}>
-              <p style={{fontSize:'12px',color:'var(--text-secondary)',margin:'0 0 8px',lineHeight:1.5}}>
-                Scan with any UPI app, or tap the button below to open your UPI app directly.
-              </p>
-              <p style={{fontSize:'11px',color:'var(--text-tertiary)',margin:'0 0 10px',fontFamily:'monospace'}}>{config.upiId}</p>
-              <button
-                onClick={async()=>{
-                  // Record the redirect in the sheet
-                  try { await apiPost('logPaymentRedirect',{orderId, timestamp: new Date().toISOString()}) } catch {}
-                  setPayRedirected(true)
-                  // Open UPI deep link
-                  window.location.href=`upi://pay?pa=${config.upiId}&pn=${encodeURIComponent(config.upiName)}&tn=${encodeURIComponent(config.businessName)}+Order+${orderId}&cu=INR`
-                }}
-                style={{...btnP,padding:'8px 14px',fontSize:'13px',display:'flex',alignItems:'center',gap:6}}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 2L2 7l10 5 10-5-10-5M2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
-                Pay ₹{amount||'...'} now
-              </button>
-            </div>
-          </div>
-        </div>
+      {!cancelled && UPI_ID && (
+        <UpiPayPanel upiId={config.upiId} upiName={config.upiName} orderId={orderId}/>
       )}
 
       <button onClick={onNewOrder} style={{...btnS,width:'100%',textAlign:'center'}}>
@@ -767,26 +964,20 @@ function CustomerForm({menu,config=CONFIG_DEFAULTS,onSubmit}) {
       </Sec>
 
       <Sec title="Delivery details">
-        {(()=>{
-          const n=parseInt(config.slotCount)||2
-          const slots=(['slot1','slot2','slot3']).slice(0,n)
-          const labels=slotLabels(config)
-          return (
-            <div style={{display:'grid',gridTemplateColumns:`repeat(${n},1fr)`,gap:8,marginBottom:10}}>
-              {slots.map(s=>{
-                const sel=form.slot===s
-                return (
-                  <button key={s} onClick={()=>upd('slot',s)}
-                    style={{padding:'12px',borderRadius:8,
-                      border:`${sel?'2px':'0.5px'} solid ${sel?'var(--amb)':'var(--border)'}`,
-                      background:sel?'var(--amb-bg)':'var(--bg-primary)',cursor:'pointer',textAlign:'left'}}>
-                    <div style={{fontSize:'13px',fontWeight:500,color:sel?'var(--amb-text)':'var(--text-primary)'}}>{labels[s]||s}</div>
-                  </button>
-                )
-              })}
-            </div>
-          )
-        })()}
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
+          {['slot1','slot2'].map(s=>{
+            const sel=form.slot===s
+            return (
+              <button key={s} onClick={()=>upd('slot',s)}
+                style={{padding:'12px',borderRadius:8,
+                  border:`${sel?'2px':'0.5px'} solid ${sel?'var(--amb)':'var(--border)'}`,
+                  background:sel?'var(--amb-bg)':'var(--bg-primary)',cursor:'pointer',textAlign:'left'}}>
+                <div style={{fontSize:'13px',fontWeight:500,color:sel?'var(--amb-text)':'var(--text-primary)'}}>{s==='slot1'?'Slot 1':'Slot 2'}</div>
+                <div style={{fontSize:'12px',color:sel?'var(--amb)':'var(--text-secondary)',marginTop:2}}>{s==='slot1'?'Morning delivery':'Afternoon delivery'}</div>
+              </button>
+            )
+          })}
+        </div>
         <Fld label="Delivery date">
           <input style={inp} type="date" value={form.date} min={todayStr()} onChange={e=>upd('date',e.target.value)}/>
         </Fld>
@@ -955,12 +1146,37 @@ function DatePicker({ value, onChange }) {
   )
 }
 
+// ── Group repeat orders (same customer+items+slot+date within 60s) ───────────
+function groupOrders(orders) {
+  const groups = []
+  const used = new Set()
+  for (let i = 0; i < orders.length; i++) {
+    if (used.has(orders[i].id)) continue
+    const base = orders[i]
+    const baseItems = JSON.stringify(base.items)
+    const matches = [base]
+    for (let j = i + 1; j < orders.length; j++) {
+      if (used.has(orders[j].id)) continue
+      const o = orders[j]
+      const sameCustomer = o.name === base.name && o.phone === base.phone
+      const sameItems    = JSON.stringify(o.items) === baseItems
+      const sameSlot     = o.slot === base.slot && o.date === base.date
+      const within60s    = Math.abs(new Date(o.createdAt) - new Date(base.createdAt)) < 60000
+      if (sameCustomer && sameItems && sameSlot && within60s) { matches.push(o); used.add(o.id) }
+    }
+    used.add(base.id)
+    groups.push({ ...base, _count: matches.length, _ids: matches.map(m => m.id) })
+  }
+  return groups
+}
+
 // ── Admin View ────────────────────────────────────────────────────────────────
 function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMenu,onLock,onRefresh}) {
   const [tab,setTab]=useState('orders')
   const [filterDate,setFilterDate]=useState(todayStr())
   const [filterSlot,setFilterSlot]=useState('all')
   const [filterStatus,setFilterStatus]=useState('all')
+  const [filterPayment,setFilterPayment]=useState('all')
   const [search,setSearch]=useState('')
   const [editOrder,setEditOrder]=useState(null)
   const [exporting,setExporting]=useState(false)
@@ -968,31 +1184,32 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
   const [saving,setSaving]=useState(null)
   const [refreshing,setRefreshing]=useState(false)
   const [viewPinOrder,setViewPinOrder]=useState(null)
+  const [payLogs,setPayLogs]=useState([])
+
+  // Load payment redirect logs on mount
+  useEffect(()=>{ apiGet({action:'getPaymentRedirects'}).then(res=>setPayLogs(Array.isArray(res)?res:[])).catch(()=>{}) },[])
+
+  // Build redirect count map: orderId → number of redirects
+  const redirectCount = {}
+  payLogs.forEach(l => { redirectCount[l.orderId] = (redirectCount[l.orderId]||0)+1 })
 
   async function manualRefresh() {
     setRefreshing(true)
     await onRefresh()
     setRefreshing(false)
   }
-  async function loadPayLogs() {
-    if(payLogsLoaded) return
-    try {
-      const res = await apiGet({action:'getPaymentRedirects'})
-      setPayLogs(Array.isArray(res)?res:[])
-    } catch {}
-    setPayLogsLoaded(true)
-  }
 
   const filtered = useMemo(()=>orders.filter(o=>{
     if(filterDate&&o.date!==filterDate) return false
     if(filterSlot!=='all'&&o.slot!==filterSlot) return false
     if(filterStatus!=='all'&&o.status!==filterStatus) return false
+    if(filterPayment!=='all'&&(o.payment||'pending')!==filterPayment) return false
     if(search){
       const s=search.toLowerCase()
       if(!o.name.toLowerCase().includes(s)&&!o.phone.includes(s)&&!o.address.toLowerCase().includes(s)) return false
     }
     return true
-  }).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)),[orders,filterDate,filterSlot,filterStatus,search])
+  }).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)),[orders,filterDate,filterSlot,filterStatus,filterPayment,search])
 
   const grouped = useMemo(()=>groupOrders(filtered),[filtered])
 
@@ -1003,7 +1220,7 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
       {label:'Slot 1',val:tod.filter(o=>o.slot==='slot1').length},
       {label:'Slot 2',val:tod.filter(o=>o.slot==='slot2').length},
       {label:'Active',val:tod.filter(o=>o.status!=='delivered'&&o.status!=='cancelled').length},
-      {label:'Delivered',val:tod.filter(o=>o.status==='delivered').length},
+      {label:'Paid today',val:tod.filter(o=>o.payment==='paid').length},
     ]
   },[orders])
 
@@ -1044,7 +1261,7 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
   function exportExcel(){
     setExporting(true)
     try {
-      const rows=filtered.map(o=>({'Date':o.date,'Slot':SLOT_LABELS[o.slot],'Name':o.name,'Phone':`'${o.phone}`,'Address':o.address,'Items':Object.entries(o.items||{}).map(([k,v])=>`${k} x${v}`).join(', '),'Qty Total':Object.values(o.items||{}).reduce((a,b)=>a+b,0),'Notes':o.notes||'','Status':STATUS[o.status]?.label||o.status,'Payment':o.payment==='paid'?'Paid':'Pending','Ordered At':fmtTime(o.createdAt)}))
+      const rows=filtered.map(o=>({'Date':o.date,'Slot':slotLabels(config)[o.slot]||o.slot,'Name':o.name,'Phone':`'${o.phone}`,'Address':o.address,'Items':Object.entries(o.items||{}).map(([k,v])=>`${k} x${v}`).join(', '),'Qty Total':Object.values(o.items||{}).reduce((a,b)=>a+b,0),'Notes':o.notes||'','Status':STATUS[o.status]?.label||o.status,'Payment':o.payment==='paid'?'Paid':'Pending','Ordered At':fmtTime(o.createdAt)}))
       const ws=XLSX.utils.json_to_sheet(rows);ws['!cols']=[10,16,16,13,30,36,8,20,14,10,12].map(w=>({wch:w}))
       const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Orders');XLSX.writeFile(wb,`tiffinbox-${filterDate||'all'}.xlsx`)
     } catch {alert('Export failed')}
@@ -1072,8 +1289,8 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
 
       {/* Tabs + Lock + Refresh */}
       <div style={{display:'flex',alignItems:'center',borderBottom:'0.5px solid var(--border)',marginBottom:'1.25rem'}}>
-        {[['orders','Orders'],['payments','Payment Redirects'],['settings','Menu & Settings']].map(([k,lbl])=>(
-          <button key={k} onClick={()=>{setTab(k);if(k==='payments')loadPayLogs()}}
+        {[['orders','Orders'],['settings','Menu & Settings']].map(([k,lbl])=>(
+          <button key={k} onClick={()=>setTab(k)}
             style={{padding:'9px 16px',border:'none',background:'none',cursor:'pointer',fontSize:'14px',fontWeight:tab===k?500:400,color:tab===k?'var(--text-primary)':'var(--text-secondary)',borderBottom:tab===k?`2px solid var(--amb)`:'2px solid transparent',marginBottom:-1,fontFamily:'inherit'}}>
             {lbl}
           </button>
@@ -1090,9 +1307,7 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
         </div>
       </div>
 
-      {tab==='payments'?(
-        <PaymentLogsTab logs={payLogs} loaded={payLogsLoaded} orders={orders} onReload={()=>{setPayLogsLoaded(false);loadPayLogs()}}/>
-      ):tab==='orders'?(
+      {tab==='orders'?(
         <>
           <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center',marginBottom:'1rem'}}>
             <DatePicker value={filterDate} onChange={setFilterDate}/>
@@ -1103,6 +1318,11 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
             <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} style={sel}>
               <option value="all">All statuses</option>
               {Object.entries(STATUS).map(([k,v])=><option key={k} value={k}>{v.label}</option>)}
+            </select>
+            <select value={filterPayment} onChange={e=>setFilterPayment(e.target.value)} style={sel}>
+              <option value="all">All payments</option>
+              <option value="paid">Paid</option>
+              <option value="pending">Pending</option>
             </select>
             <input placeholder="Search name, phone, address…" value={search} onChange={e=>setSearch(e.target.value)} style={{...sel,minWidth:200}}/>
             <div style={{marginLeft:'auto',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
@@ -1133,7 +1353,7 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
                   <thead>
                     <tr style={{borderBottom:'0.5px solid var(--border)',background:'var(--bg-secondary)'}}>
                       <th style={{padding:'10px 12px',textAlign:'left'}}><input type="checkbox" checked={allSel} onChange={toggleAll} style={{cursor:'pointer'}}/></th>
-                      {['Date / Time','Slot','Customer','Items','Status','Payment','Actions'].map(h=>(
+                      {['Date / Time','Slot','Customer','Items','Status','Payment','UPI','Actions'].map(h=>(
                         <th key={h} style={{padding:'10px 12px',textAlign:'left',fontWeight:500,color:'var(--text-secondary)',whiteSpace:'nowrap',fontSize:'12px'}}>{h}</th>
                       ))}
                     </tr>
@@ -1160,6 +1380,7 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
                             <div key={item} style={{whiteSpace:'nowrap',fontSize:'12px',color:'var(--text-primary)'}}>{item} <span style={{color:'var(--text-secondary)'}}>×{qty}</span></div>
                           ))}
                           {o.notes&&<div style={{color:'var(--text-tertiary)',fontStyle:'italic',fontSize:'11px',marginTop:2}}>{o.notes}</div>}
+                          {o._count>1&&<div style={{marginTop:4,display:'inline-flex',alignItems:'center',gap:4,background:'var(--amb-bg)',color:'var(--amb-text)',fontSize:'10px',fontWeight:600,padding:'2px 6px',borderRadius:4}}>×{o._count} orders</div>}
                         </td>
                         <td style={{padding:'10px 12px'}}>
                           <select value={o.status} onChange={e=>updateStatus(o.id,e.target.value)}
@@ -1173,6 +1394,18 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
                             {o.payment==='paid'?'✓ Paid':'Pending'}
                           </button>
                         </td>
+                        <td style={{padding:'10px 12px',textAlign:'center'}}>
+                          {redirectCount[o.id]
+                            ? <span title={`${redirectCount[o.id]} UPI redirect${redirectCount[o.id]>1?'s':''}`}
+                                style={{fontSize:'11px',padding:'2px 7px',borderRadius:4,
+                                  background:redirectCount[o.id]>2?'#fee2e2':redirectCount[o.id]>1?'#fef3c7':'#d1fae5',
+                                  color:redirectCount[o.id]>2?'#b91c1c':redirectCount[o.id]>1?'#92400e':'#065f46',
+                                  fontWeight:500,cursor:'default'}}>
+                                {redirectCount[o.id]}×{redirectCount[o.id]>1&&' ⚠'}
+                              </span>
+                            : <span style={{color:'var(--text-tertiary)',fontSize:'11px'}}>—</span>
+                          }
+                        </td>
                         <td style={{padding:'10px 12px'}}>
                           <div style={{display:'flex',gap:5}}>
                             {o.mapPin&&<button onClick={()=>setViewPinOrder(o)} style={{padding:'4px 10px',borderRadius:6,border:'0.5px solid var(--amb)',background:'var(--amb-bg)',cursor:'pointer',fontSize:'12px',fontFamily:'inherit',color:'var(--amb-text)'}}>📍 Pin</button>}
@@ -1185,8 +1418,11 @@ function AdminView({orders,menu,config=CONFIG_DEFAULTS,setConfig,setOrders,setMe
                   </tbody>
                 </table>
               </div>
-              <div style={{padding:'8px 12px',borderTop:'0.5px solid var(--border)',fontSize:'12px',color:'var(--text-secondary)'}}>
-                {filtered.length} order{filtered.length!==1?'s':''} · {filtered.reduce((a,o)=>a+Object.values(o.items||{}).reduce((x,y)=>x+y,0),0)} total items
+              <div style={{padding:'8px 12px',borderTop:'0.5px solid var(--border)',fontSize:'12px',color:'var(--text-secondary)',display:'flex',gap:'1.5rem'}}>
+                <span>{filtered.length} order{filtered.length!==1?'s':''}</span>
+                <span>{filtered.reduce((a,o)=>a+Object.values(o.items||{}).reduce((x,y)=>x+y,0),0)} total items</span>
+                <span style={{color:'#065f46'}}>{filtered.filter(o=>o.payment==='paid').length} paid</span>
+                <span style={{color:'#92400e'}}>{filtered.filter(o=>o.payment!=='paid').length} pending</span>
               </div>
             </div>
           )}
@@ -1256,80 +1492,6 @@ function EditModal({order,menu,onSave,onClose}) {
   )
 }
 
-// ── Payment Redirects Tab ────────────────────────────────────────────────────
-function PaymentLogsTab({ logs, loaded, orders, onReload }) {
-  const [filterDate, setFilterDate] = useState(todayStr())
-  const orderMap = Object.fromEntries((orders||[]).map(o=>[o.id,o]))
-
-  const filtered = logs.filter(l => !filterDate || (l.date||l.timestamp||'').startsWith(filterDate))
-    .sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp))
-
-  const redirectCount = {}
-  logs.forEach(l => { redirectCount[l.orderId] = (redirectCount[l.orderId]||0)+1 })
-
-  return (
-    <div>
-      <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:'1rem',flexWrap:'wrap'}}>
-        <DatePicker value={filterDate} onChange={setFilterDate}/>
-        <span style={{fontSize:'12px',color:'var(--text-secondary)'}}>{filtered.length} redirect{filtered.length!==1?'s':''}</span>
-        <button onClick={onReload} style={{...btnS,marginLeft:'auto',display:'flex',alignItems:'center',gap:5,fontSize:'12px'}}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M23 4v6h-6"/><path d="M1 20v-6h6"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
-          Reload
-        </button>
-      </div>
-      {!loaded ? (
-        <div style={{textAlign:'center',padding:'3rem',color:'var(--text-secondary)',fontSize:'13px'}}>Loading…</div>
-      ) : filtered.length === 0 ? (
-        <div style={{textAlign:'center',padding:'4rem 2rem',color:'var(--text-secondary)',background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)'}}>No payment redirects for this date</div>
-      ) : (
-        <div style={{background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)',overflow:'hidden'}}>
-          <div style={{overflowX:'auto'}}>
-            <table style={{width:'100%',borderCollapse:'collapse',fontSize:'13px'}}>
-              <thead>
-                <tr style={{borderBottom:'0.5px solid var(--border)',background:'var(--bg-secondary)'}}>
-                  {['Time','Order ID','Customer','Phone','Amount','Payment','# Taps'].map(h=>(
-                    <th key={h} style={{padding:'10px 12px',textAlign:'left',fontWeight:500,color:'var(--text-secondary)',whiteSpace:'nowrap',fontSize:'12px'}}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((l,i)=>{
-                  const o = orderMap[l.orderId]
-                  const isPaid = o?.payment==='paid'
-                  return (
-                    <tr key={i} style={{borderBottom:i<filtered.length-1?'0.5px solid var(--border)':'none'}}>
-                      <td style={{padding:'10px 12px',whiteSpace:'nowrap',color:'var(--text-secondary)',fontSize:'12px'}}>{fmtTime(l.timestamp)}</td>
-                      <td style={{padding:'10px 12px',fontFamily:'monospace',fontSize:'11px',color:'var(--text-tertiary)'}}>{l.orderId}</td>
-                      <td style={{padding:'10px 12px',color:'var(--text-primary)',fontWeight:500}}>{o?.name||'—'}</td>
-                      <td style={{padding:'10px 12px',color:'var(--text-secondary)',fontSize:'12px'}}>{o?.phone||'—'}</td>
-                      <td style={{padding:'10px 12px',color:'var(--text-primary)'}}>{o?.amount?`₹${o.amount}`:'—'}</td>
-                      <td style={{padding:'10px 12px'}}>
-                        <span style={{fontSize:'11px',padding:'3px 8px',borderRadius:4,background:isPaid?'#d1fae5':'#fef3c7',color:isPaid?'#065f46':'#92400e',fontWeight:500}}>
-                          {isPaid?'✓ Paid':'Pending'}
-                        </span>
-                      </td>
-                      <td style={{padding:'10px 12px',textAlign:'center'}}>
-                        <span style={{fontSize:'12px',fontWeight:500,color:redirectCount[l.orderId]>1?'#e05555':'var(--text-secondary)'}}>
-                          {redirectCount[l.orderId]}{redirectCount[l.orderId]>1&&<span style={{fontSize:'10px',marginLeft:3}}>⚠</span>}
-                        </span>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div style={{padding:'8px 12px',borderTop:'0.5px solid var(--border)',fontSize:'12px',color:'var(--text-secondary)',display:'flex',gap:'1.5rem'}}>
-            <span>{filtered.length} redirect{filtered.length!==1?'s':''}</span>
-            <span>{filtered.filter(l=>orderMap[l.orderId]?.payment==='paid').length} confirmed paid</span>
-            <span style={{color:'#e05555'}}>{Object.values(redirectCount).filter(c=>c>1).length} with multiple taps</span>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ── Settings Tab ──────────────────────────────────────────────────────────────
 function SettingsTab({menu,setMenu,config=CONFIG_DEFAULTS,setConfig}) {
   const [newItem,setNewItem]=useState('')
@@ -1340,12 +1502,17 @@ function SettingsTab({menu,setMenu,config=CONFIG_DEFAULTS,setConfig}) {
   const [pinNew1,setPinNew1]=useState('')
   const [pinNew2,setPinNew2]=useState('')
   const [pinMsg,setPinMsg]=useState(null)
-
-  async function saveMenu(m){setMenu(m);setSavingMenu(true);try{await apiPost('updateMenu',{menu:m})}catch{};setSavingMenu(false)}
   const [configDraft,setConfigDraft]=useState(()=>({...config}))
   const [savingConfig,setSavingConfig]=useState(false)
   const [configMsg,setConfigMsg]=useState(null)
+
   const updCfg=(k,v)=>setConfigDraft(d=>({...d,[k]:v}))
+
+  async function saveMenu(m){setMenu(m);setSavingMenu(true);try{await apiPost('updateMenu',{menu:m})}catch{};setSavingMenu(false)}
+  async function addItem(){const t=newItem.trim();if(!t||menu.includes(t))return;await saveMenu([...menu,t]);setNewItem('')}
+  async function removeItem(item){await saveMenu(menu.filter(m=>m!==item))}
+  function handleDrop(idx){if(dragIdx===null||dragIdx===idx)return;const next=[...menu];const[moved]=next.splice(dragIdx,1);next.splice(idx,0,moved);saveMenu(next);setDragIdx(null);setOverIdx(null)}
+
   async function saveConfig(){
     setSavingConfig(true); setConfigMsg(null)
     try {
@@ -1356,9 +1523,6 @@ function SettingsTab({menu,setMenu,config=CONFIG_DEFAULTS,setConfig}) {
     } catch { setConfigMsg({ok:false,text:'Could not save. Check your connection.'}) }
     setSavingConfig(false)
   }
-  async function addItem(){const t=newItem.trim();if(!t||menu.includes(t))return;await saveMenu([...menu,t]);setNewItem('')}
-  async function removeItem(item){await saveMenu(menu.filter(m=>m!==item))}
-  function handleDrop(idx){if(dragIdx===null||dragIdx===idx)return;const next=[...menu];const[moved]=next.splice(dragIdx,1);next.splice(idx,0,moved);saveMenu(next);setDragIdx(null);setOverIdx(null)}
 
   async function changePin(){
     setPinMsg(null)
@@ -1373,6 +1537,7 @@ function SettingsTab({menu,setMenu,config=CONFIG_DEFAULTS,setConfig}) {
 
   const pinInp={...inp,letterSpacing:'0.25em'}
   const colorSwatches=['#BA7517','#2563EB','#059669','#DC2626','#7C3AED','#D97706','#0891B2','#BE185D','#374151']
+
   return (
     <div style={{maxWidth:560,display:'flex',flexDirection:'column',gap:'1rem'}}>
 
@@ -1434,6 +1599,7 @@ function SettingsTab({menu,setMenu,config=CONFIG_DEFAULTS,setConfig}) {
         <button onClick={saveConfig} disabled={savingConfig} style={{...btnP,opacity:savingConfig?0.7:1}}>Save business settings</button>
       </div>
 
+      {/* ── Menu items ── */}
       <div style={{background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)',padding:'1.25rem'}}>
         <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}}>
           <p style={{fontWeight:500,fontSize:'14px',margin:0,color:'var(--text-primary)'}}>Menu items</p>
@@ -1459,6 +1625,8 @@ function SettingsTab({menu,setMenu,config=CONFIG_DEFAULTS,setConfig}) {
           <button onClick={addItem} style={btnP}>Add</button>
         </div>
       </div>
+
+      {/* ── Change PIN ── */}
       <div style={{background:'var(--bg-primary)',borderRadius:12,border:'0.5px solid var(--border)',padding:'1.25rem'}}>
         <p style={{fontWeight:500,fontSize:'14px',margin:'0 0 1rem',color:'var(--text-primary)'}}>Change admin PIN</p>
         <Fld label="Current PIN"><input style={pinInp} type="password" inputMode="numeric" maxLength={4} placeholder="••••" value={pinCur} onChange={e=>setPinCur(e.target.value.replace(/\D/g,''))}/></Fld>
@@ -1470,6 +1638,7 @@ function SettingsTab({menu,setMenu,config=CONFIG_DEFAULTS,setConfig}) {
     </div>
   )
 }
+
 
 // ── Root App ──────────────────────────────────────────────────────────────────
 export default function App() {
@@ -1505,7 +1674,8 @@ export default function App() {
         apiGet({action:'getConfig'}),
       ])
       setOrders(Array.isArray(ordersData)?ordersData:[])
-      setMenu(Array.isArray(menuData)&&menuData.length?menuData:DEFAULT_MENU)
+      const menuItems = Array.isArray(menuData) ? menuData : (menuData?.items || DEFAULT_MENU)
+      setMenu(menuItems.length ? menuItems : DEFAULT_MENU)
       if(configData&&typeof configData==='object'&&!Array.isArray(configData)) {
         const merged = {...CONFIG_DEFAULTS,...configData}
         setConfig(merged)
