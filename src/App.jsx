@@ -225,11 +225,10 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
 
   useEffect(() => {
     let cancelled = false
-    loadLeaflet().then(L => {
+
+    function initMap(L, centerLat, centerLng, zoom) {
       if (cancelled || !mapRef.current) return
-      const startLat = initialPin?.lat ?? 26.9124
-      const startLng = initialPin?.lng ?? 75.7873
-      const map = L.map(mapRef.current, { zoomControl: true }).setView([startLat, startLng], initialPin ? 16 : 13)
+      const map = L.map(mapRef.current, { zoomControl: true }).setView([centerLat, centerLng], zoom)
       leafMap.current = map
       L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors', maxZoom: 19,
@@ -242,7 +241,7 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
         </svg>`,
         iconSize: [28, 38], iconAnchor: [14, 38], popupAnchor: [0, -38],
       })
-      const marker = L.marker([startLat, startLng], { icon, draggable: true }).addTo(map)
+      const marker = L.marker([centerLat, centerLng], { icon, draggable: true }).addTo(map)
       markerRef.current = marker
       setLoading(false)
       if (initialPin) setPin(initialPin)
@@ -255,7 +254,30 @@ function MapPickerModal({ initialPin, onConfirm, onClose }) {
         marker.setLatLng([lat, lng])
         setPin({ lat, lng })
       })
+    }
+
+    loadLeaflet().then(L => {
+      if (cancelled) return
+      if (initialPin) {
+        // Re-opening with an existing pin — center exactly on it
+        initMap(L, initialPin.lat, initialPin.lng, 16)
+      } else if (navigator.geolocation) {
+        // No pin yet — try to center on user's actual location first
+        navigator.geolocation.getCurrentPosition(
+          ({ coords: { latitude, longitude } }) => {
+            if (!cancelled) initMap(L, latitude, longitude, 15)
+          },
+          () => {
+            // Permission denied or unavailable — fall back to Jaipur
+            if (!cancelled) initMap(L, 26.9124, 75.7873, 13)
+          },
+          { timeout: 5000, maximumAge: 60000 }
+        )
+      } else {
+        initMap(L, 26.9124, 75.7873, 13)
+      }
     }).catch(err => { if (!cancelled) { setError('Map failed to load: ' + err.message); setLoading(false) } })
+
     return () => {
       cancelled = true
       if (leafMap.current) { leafMap.current.remove(); leafMap.current = null }
@@ -722,7 +744,7 @@ function OrderTracker({orderId, initialStatus, slot, date, amount, config=CONFIG
       )}
 
       {/* ── UPI Payment Panel ── */}
-      {!cancelled && UPI_ID && (
+      {!cancelled && config.upiId && (
         <UpiPayPanel upiId={config.upiId} upiName={config.upiName} orderId={orderId}/>
       )}
 
@@ -884,14 +906,18 @@ function CustomerForm({menu,config=CONFIG_DEFAULTS,onSubmit}) {
     try { localStorage.setItem('tiffinbox_user',JSON.stringify({name,phone,address})) } catch {}
     const notes=form.notes.trim()
     // Place repeatCount identical orders; track only the last one in the tracker
-    let lastOrder = null
-    for(let i=0;i<repeatCount;i++){
-      const suffix = repeatCount>1 ? ` (${i+1}/${repeatCount})` : ''
-      lastOrder = await onSubmit({...form,name,phone,address,notes:notes+suffix,mapPin:mapPin||null})
-    }
-    const active = {id:lastOrder.id, status:'new', slot:form.slot, date:form.date, amount:lastOrder.amount||null}
-    try { localStorage.setItem('tiffinbox_active_order', JSON.stringify(active)) } catch {}
-    setActiveOrder(active)
+    try {
+      let lastOrder = null
+      for(let i=0;i<repeatCount;i++){
+        const suffix = repeatCount>1 ? ` (${i+1}/${repeatCount})` : ''
+        lastOrder = await onSubmit({...form,name,phone,address,notes:notes+suffix,mapPin:mapPin||null})
+      }
+      if(lastOrder?.id) {
+        const active = {id:lastOrder.id, status:'new', slot:form.slot, date:form.date, amount:lastOrder.amount||null}
+        try { localStorage.setItem('tiffinbox_active_order', JSON.stringify(active)) } catch {}
+        setActiveOrder(active)
+      }
+    } catch(err) { console.error('Order submit failed', err) }
     setBusy(false)
   }
 
@@ -964,16 +990,15 @@ function CustomerForm({menu,config=CONFIG_DEFAULTS,onSubmit}) {
       </Sec>
 
       <Sec title="Delivery details">
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}}>
-          {['slot1','slot2'].map(s=>{
+        <div style={{display:'grid',gridTemplateColumns:`repeat(${parseInt(config.slotCount)||2},1fr)`,gap:8,marginBottom:10}}>
+          {Object.entries(slotLabels(config)).map(([s,label])=>{
             const sel=form.slot===s
             return (
               <button key={s} onClick={()=>upd('slot',s)}
                 style={{padding:'12px',borderRadius:8,
                   border:`${sel?'2px':'0.5px'} solid ${sel?'var(--amb)':'var(--border)'}`,
                   background:sel?'var(--amb-bg)':'var(--bg-primary)',cursor:'pointer',textAlign:'left'}}>
-                <div style={{fontSize:'13px',fontWeight:500,color:sel?'var(--amb-text)':'var(--text-primary)'}}>{s==='slot1'?'Slot 1':'Slot 2'}</div>
-                <div style={{fontSize:'12px',color:sel?'var(--amb)':'var(--text-secondary)',marginTop:2}}>{s==='slot1'?'Morning delivery':'Afternoon delivery'}</div>
+                <div style={{fontSize:'13px',fontWeight:500,color:sel?'var(--amb-text)':'var(--text-primary)'}}>{label}</div>
               </button>
             )
           })}
